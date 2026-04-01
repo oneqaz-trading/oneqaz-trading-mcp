@@ -5,7 +5,7 @@
   "description": "MCP server for real-time trading signal analysis, position monitoring, 7-stage market regime detection (extreme_bearish to extreme_bullish), Fear & Greed index, cross-market pattern recognition, and portfolio tracking. Supports crypto, US stocks, and Korean stocks.",
   "version": "0.1.0",
   "repository": {
-    "url": "https://github.com/oneqaz/oneqaz-trading-mcp",
+    "url": "https://github.com/wnsod/oneqaz-trading-mcp",
     "source": "github"
   },
   "packages": [
