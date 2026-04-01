@@ -37,6 +37,7 @@ from oneqaz_trading_mcp.config import (
 )
 from oneqaz_trading_mcp.cache import SimpleCache
 from oneqaz_trading_mcp.response import to_resource_text
+from oneqaz_trading_mcp.rate_limiter import rate_limiter
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -102,13 +103,14 @@ cache = SimpleCache()
 
 @mcp.resource("market://health")
 def health_check() -> str:
-    """Server health check. Returns: status, timestamp, version."""
+    """Server health check. Returns: status, timestamp, version, rate limits."""
     return to_resource_text({
         "status": "healthy",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "version": "0.1.0",
+        "version": "0.1.4",
         "server": "OneqazTradingMCP",
         "data_root": str(DATA_ROOT),
+        "rate_limits": rate_limiter.get_all_stats(),
     })
 
 
@@ -251,11 +253,62 @@ def create_app():
     return mcp
 
 
+def _make_asgi_app():
+    """Create ASGI app with rate limiting middleware."""
+    from starlette.middleware import Middleware as StarletteMiddleware
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+
+    class RateLimitMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request: Request, call_next):
+            # Skip rate limiting for non-MCP paths
+            if not request.url.path.startswith("/mcp"):
+                return await call_next(request)
+
+            # Get client IP (Cloudflare sends CF-Connecting-IP)
+            ip = (
+                request.headers.get("cf-connecting-ip")
+                or request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+                or request.client.host if request.client else "unknown"
+            )
+
+            allowed, info = rate_limiter.check(ip)
+            if not allowed:
+                logger.warning("Rate limited: %s — %s", ip, info.get("limit_type"))
+                return JSONResponse(
+                    status_code=429,
+                    content={
+                        "jsonrpc": "2.0",
+                        "error": {
+                            "code": -32000,
+                            "message": info["message"],
+                            "data": info,
+                        }
+                    },
+                    headers={"Retry-After": str(info.get("retry_after", 60))},
+                )
+
+            response = await call_next(request)
+
+            # Add rate limit headers
+            response.headers["X-RateLimit-Daily-Remaining"] = str(info.get("remaining_daily", 0))
+            response.headers["X-RateLimit-Minute-Remaining"] = str(info.get("remaining_minute", 0))
+            return response
+
+    return RateLimitMiddleware
+
+
 def run_server():
     """Start the MCP server."""
     create_app()
 
+    # Add rate limiting ASGI middleware
+    RateLimitMiddleware = _make_asgi_app()
+    mcp._extra_middleware = [RateLimitMiddleware]
+
     logger.info("Starting OneqazTradingMCP on %s:%s", MCP_SERVER_HOST, MCP_SERVER_PORT)
+    logger.info("   Rate limits: %d/day, %d/min per IP", rate_limiter.daily_limit, rate_limiter.minute_limit)
     logger.info("   Swagger UI: http://localhost:%s/docs", MCP_SERVER_PORT)
 
     mcp.run(
