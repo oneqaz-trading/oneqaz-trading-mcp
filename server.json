@@ -1,0 +1,41 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "com.oneqaz/oneqaz-trading-mcp",
+  "title": "Trading Signal & Market Regime MCP Server",
+  "description": "MCP server for real-time trading signal analysis, position monitoring, 7-stage market regime detection (extreme_bearish to extreme_bullish), Fear & Greed index, cross-market pattern recognition, and portfolio tracking. Supports crypto, US stocks, and Korean stocks.",
+  "version": "0.1.0",
+  "repository": {
+    "url": "https://github.com/oneqaz/oneqaz-trading-mcp",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "oneqaz-trading-mcp",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "DATA_ROOT",
+          "description": "Root directory for market data files",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "MCP_SERVER_PORT",
+          "description": "Server port (default: 8010)",
+          "isRequired": false,
+          "isSecret": false
+        }
+      ]
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://api.oneqaz.com/mcp"
+    }
+  ]
+}

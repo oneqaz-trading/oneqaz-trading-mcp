@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "oneqaz-trading-mcp"
+version = "0.1.0"
+description = "MCP server for trading signal analysis, position monitoring, and market regime detection"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+keywords = [
+    "mcp", "trading", "signals", "market-analysis", "fastmcp",
+    "crypto", "stocks", "regime", "fear-greed", "positions",
+    "portfolio", "technical-analysis", "sentiment", "claude",
+    "model-context-protocol",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
+dependencies = [
+    "fastmcp>=2.14,<3",
+]
+
+[project.scripts]
+oneqaz-trading-mcp = "oneqaz_trading_mcp.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/oneqaz/oneqaz-trading-mcp"
+Repository = "https://github.com/oneqaz/oneqaz-trading-mcp"
+Issues = "https://github.com/oneqaz/oneqaz-trading-mcp/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
