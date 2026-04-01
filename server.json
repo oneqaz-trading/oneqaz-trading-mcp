@@ -3,7 +3,7 @@
   "name": "io.github.wnsod/oneqaz-trading-mcp",
   "title": "Trading Signal & Market Regime MCP Server",
   "description": "Trading signals, regime detection, Fear & Greed, positions for crypto, US and Korean stocks.",
-  "version": "0.1.2",
+  "version": "0.1.4",
   "repository": {
     "url": "https://github.com/oneqaz-trading/oneqaz-trading-mcp",
     "source": "github"
@@ -12,7 +12,7 @@
     {
       "registryType": "pypi",
       "identifier": "oneqaz-trading-mcp",
-      "version": "0.1.2",
+      "version": "0.1.4",
       "transport": {
         "type": "stdio"
       },
