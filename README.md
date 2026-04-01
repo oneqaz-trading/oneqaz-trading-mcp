@@ -43,7 +43,23 @@ Server starts at `http://localhost:8010` by default.
 
 ### Connect from Claude
 
-Add to your Claude MCP config:
+#### Live API (recommended — no install needed)
+
+Connect directly to our 24/7 live server with real-time market data:
+
+```json
+{
+  "mcpServers": {
+    "oneqaz-trading": {
+      "url": "https://api.oneqaz.com/mcp"
+    }
+  }
+}
+```
+
+#### Local (self-hosted with sample data)
+
+If you prefer to run locally with demo data:
 
 ```json
 {
