@@ -227,7 +227,10 @@ import os
 def register_decision_tools(mcp, cache):
     """Register decision tools"""
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Get Latest Trading Decisions",
+        annotations={"readOnlyHint": True, "destructiveHint": False},
+    )
     def get_latest_decisions(
         market_id: str,
         limit: int = 10,
@@ -253,7 +256,10 @@ def register_decision_tools(mcp, cache):
             hours_back=hours_back,
         )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Get LLM Trading Decisions",
+        annotations={"readOnlyHint": True, "destructiveHint": False},
+    )
     def get_llm_trading_decisions(
         market_id: str,
         symbol: str = None,

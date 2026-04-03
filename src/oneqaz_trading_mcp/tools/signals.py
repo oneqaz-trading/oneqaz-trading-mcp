@@ -529,7 +529,10 @@ def _generate_role_analysis_summary(
 def register_signal_tools(mcp, cache):
     """Register signal tools"""
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Get Trading Signals",
+        annotations={"readOnlyHint": True, "destructiveHint": False},
+    )
     def get_signals(
         market_id: str,
         coin: str = None,
@@ -567,7 +570,10 @@ def register_signal_tools(mcp, cache):
             hours_back=hours_back,
         )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Get Signal Detail",
+        annotations={"readOnlyHint": True, "destructiveHint": False},
+    )
     def get_signal_detail(
         market_id: str,
         coin: str,
@@ -590,7 +596,10 @@ def register_signal_tools(mcp, cache):
             interval=interval,
         )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Get Role-Based Signal Analysis",
+        annotations={"readOnlyHint": True, "destructiveHint": False},
+    )
     def get_role_analysis(
         market_id: str,
         coin: str,

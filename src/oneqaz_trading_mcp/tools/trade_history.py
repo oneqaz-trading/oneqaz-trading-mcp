@@ -324,7 +324,10 @@ def _get_trade_analysis(market_id: str, days: int = 7) -> Dict[str, Any]:
 def register_trade_history_tools(mcp, cache):
     """Register trade history tools"""
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Get Trade History",
+        annotations={"readOnlyHint": True, "destructiveHint": False},
+    )
     def get_trade_history(
         market_id: str,
         limit: int = 1000,
@@ -371,7 +374,10 @@ def register_trade_history_tools(mcp, cache):
         cache.set(cache_key, result)
         return result
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Analyze Trades",
+        annotations={"readOnlyHint": True, "destructiveHint": False},
+    )
     def analyze_trades(
         market_id: str,
         days: int = 7,
@@ -399,7 +405,10 @@ def register_trade_history_tools(mcp, cache):
         cache.set(cache_key, result)
         return result
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Get Winning Trades",
+        annotations={"readOnlyHint": True, "destructiveHint": False},
+    )
     def get_winning_trades(
         market_id: str,
         limit: int = 10,
@@ -423,7 +432,10 @@ def register_trade_history_tools(mcp, cache):
             min_pnl=0.01,  # Positive only
         )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Get Losing Trades",
+        annotations={"readOnlyHint": True, "destructiveHint": False},
+    )
     def get_losing_trades(
         market_id: str,
         limit: int = 10,

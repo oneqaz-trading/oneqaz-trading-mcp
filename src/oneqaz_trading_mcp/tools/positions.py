@@ -330,7 +330,10 @@ def _get_strategy_distribution(market_id: str) -> Dict[str, Any]:
 def register_position_tools(mcp, cache):
     """Register position tools"""
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Get Positions",
+        annotations={"readOnlyHint": True, "destructiveHint": False},
+    )
     def get_positions(
         market_id: str,
         min_roi: Optional[float] = None,
@@ -378,7 +381,10 @@ def register_position_tools(mcp, cache):
         cache.set(cache_key, result)
         return result
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Get Position Detail",
+        annotations={"readOnlyHint": True, "destructiveHint": False},
+    )
     def get_position_detail(
         market_id: str,
         coin: str,
@@ -404,7 +410,10 @@ def register_position_tools(mcp, cache):
         cache.set(cache_key, result)
         return result
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Get Profitable Positions",
+        annotations={"readOnlyHint": True, "destructiveHint": False},
+    )
     def get_profitable_positions(
         market_id: str,
         limit: int = 20,
@@ -427,7 +436,10 @@ def register_position_tools(mcp, cache):
             limit=limit,
         )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Get Losing Positions",
+        annotations={"readOnlyHint": True, "destructiveHint": False},
+    )
     def get_losing_positions(
         market_id: str,
         limit: int = 20,
@@ -450,7 +462,10 @@ def register_position_tools(mcp, cache):
             limit=limit,
         )
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Get Strategy Distribution",
+        annotations={"readOnlyHint": True, "destructiveHint": False},
+    )
     def get_strategy_distribution(market_id: str) -> Dict[str, Any]:
         """
         Position distribution by strategy
