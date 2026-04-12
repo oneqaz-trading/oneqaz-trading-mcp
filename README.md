@@ -2,6 +2,10 @@
 
 <!-- mcp-name: io.github.wnsod/oneqaz-trading-mcp -->
 
+[![GitHub stars](https://img.shields.io/github/stars/wnsod/oneqaz-trading-mcp?style=social)](https://github.com/wnsod/oneqaz-trading-mcp)
+[![PyPI](https://img.shields.io/pypi/v/oneqaz-trading-mcp)](https://pypi.org/project/oneqaz-trading-mcp/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 > **The context layer for financial AI.**
 >
 > Your AI agent shouldn't just see prices — it should understand
@@ -26,8 +30,17 @@ Financial data APIs are everywhere. Market *intelligence* is not.
 | **Macro → ETF → Individual context chain** | ❌ | ✅ |
 | **Live 24/7 cloud API** | ❌ | ✅ |
 
-Signal weights are adjusted continuously based on actual trade outcomes
-per regime via Thompson Sampling — not static indicator thresholds.
+### How signals are generated
+
+OneQAZ signals aren't static indicator crossovers. They're produced by an **AbsoluteZero-style self-play loop**:
+
+1. **Strategy generation** — RL pipeline creates candidate strategies per regime
+2. **Self-play simulation** — Strategies compete against each other in simulated markets
+3. **Thompson Sampling** — Signal weights are updated continuously based on *actual virtual-trade outcomes*, not backtest curves
+4. **Regime adaptation** — Different strategy pools activate for trending vs ranging vs volatile markets
+
+This means the signal your AI receives for "BTC BUY 0.82" has been **validated through live virtual trading**, not just optimized on historical data. Signals that stop working get downweighted automatically.
+
 Every response includes an `_llm_summary` field optimized for AI consumption.
 
 ## What your AI gets
@@ -67,7 +80,9 @@ Real-time data, updated every minute.
 
 Ask Claude: *"What's the current market regime?"*
 
-### Option 2: Local (demo data)
+### Option 2: Local (for development & testing)
+
+Runs with demo data — great for building integrations, testing prompts, or exploring the API schema before connecting to live data.
 
 ```bash
 pip install oneqaz-trading-mcp
@@ -77,6 +92,8 @@ oneqaz-trading-mcp serve   # starts at http://localhost:8010
 
 - Swagger UI: `http://localhost:8010/docs`
 - MCP endpoint: `http://localhost:8010/mcp`
+
+> **Note**: Local mode uses static demo data. For live signals updated every minute, use the [Live API](#option-1-live-api--no-install-needed) above.
 
 Then connect from Claude:
 
@@ -264,23 +281,23 @@ docker run -p 8010:8010 oneqaz-trading-mcp
 
 ## Rate Limits
 
-The live API (`api.oneqaz.com/mcp`) has rate limits to ensure fair usage:
+| Tier | Daily Quota | Burst | Price |
+|------|------------|-------|-------|
+| **Free** (no key) | 5,000 req/day | 60 req/min | Free |
+| **API Key** | 50,000 req/day | 300 req/min | Free (beta) |
+| **Local** | Unlimited | Unlimited | Self-hosted |
 
-| Limit | Value | Description |
-|-------|-------|-------------|
-| Daily quota | 1,500 requests/IP | Resets every 24 hours |
-| Burst limit | 30 requests/min/IP | Prevents overloading |
+**What this means at Free tier:**
+- Monitor 5+ symbols all day with 1-min polling → ~7,200 req → fits within free
+- Full market scan + continuous monitoring → comfortable headroom
+- No API key needed to get started — just connect and go
 
-**What this means:**
-- Monitor 2-3 symbols all day: ~500-800 requests → no problem
-- Scan entire market once: ~1,200-1,500 requests → fits in daily quota
-- Exceeding limits returns HTTP 429 with `Retry-After` header
+**API key** (free during beta): Register at [oneqaz.com](https://oneqaz.com) for higher limits.
 
 **Response headers** on every request:
 - `X-RateLimit-Daily-Remaining`: requests left today
 - `X-RateLimit-Minute-Remaining`: requests left this minute
-
-Local self-hosted servers (`localhost`) have no rate limits.
+- Exceeding limits returns HTTP 429 with `Retry-After` header
 
 ## Disclaimer
 
