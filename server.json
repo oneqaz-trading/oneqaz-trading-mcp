@@ -2,8 +2,8 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.wnsod/oneqaz-trading-mcp",
   "title": "Trading Signal & Market Regime MCP Server",
-  "description": "The context layer for financial AI — regime detection, self-correcting signals, and macro-to-individual context chain across 1,100+ symbols (crypto, US stocks, Korean stocks). 24/7 live API.",
-  "version": "0.1.5",
+  "description": "Trading MCP with regime detection + self-verifying Trust Layer. Crypto, US, KR stocks. 24/7 live.",
+  "version": "0.2.0",
   "repository": {
     "url": "https://github.com/oneqaz-trading/oneqaz-trading-mcp",
     "source": "github"
@@ -12,7 +12,7 @@
     {
       "registryType": "pypi",
       "identifier": "oneqaz-trading-mcp",
-      "version": "0.1.5",
+      "version": "0.2.0",
       "transport": {
         "type": "stdio"
       },
@@ -30,12 +30,6 @@
           "isSecret": false
         }
       ]
-    }
-  ],
-  "remotes": [
-    {
-      "type": "streamable-http",
-      "url": "https://api.oneqaz.com/mcp"
     }
   ]
 }

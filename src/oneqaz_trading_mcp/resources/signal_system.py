@@ -1,64 +1,106 @@
 # -*- coding: utf-8 -*-
 """
-Signal System Resources (per-symbol DB based)
-==============================================
-Iterates over per-symbol signal DBs in the signals/ directory
-to provide market-wide signal summary/feedback Resources.
+Signal System Resources (종목별 DB 대응)
+========================================
+signals/ 디렉터리 내 종목별 시그널 DB를 순회하여
+시장 전체 시그널 요약/피드백 Resource를 제공합니다.
 """
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from oneqaz_trading_mcp.config import (
+from mcps.config import (
     CACHE_TTL_MARKET_STATUS,
     get_signals_dir,
     list_signal_db_files,
     get_symbol_from_signal_db,
     get_market_db_path,
 )
-from oneqaz_trading_mcp.response import to_resource_text
+from mcps.resources.resource_response import to_resource_text, mcp_error, MCPErrorCode, MCPErrorAction, wrap_with_ai_summary
 
 logger = logging.getLogger("MarketMCP")
 
 # ---------------------------------------------------------------------------
-# Helper: iterate per-symbol DBs, run query, and aggregate results
+# 헬퍼: 종목별 DB를 순회하며 쿼리 실행 후 결과 합산
 # ---------------------------------------------------------------------------
 
-_MAX_SIGNAL_DBS = 300  # Max DB iteration limit (US market ~450 -> timeout prevention)
+_MAX_SIGNAL_DBS = 150  # DB 순회 최대 한도
+_DB_POOL_SIZE = 20     # 병렬 DB 조회 스레드 수
+_DB_TIMEOUT = 2.0      # 개별 DB 연결 타임아웃 (초)
+
+def _query_single_db(db_file: Path, query: str, params=()) -> list:
+    """단일 DB 쿼리 (스레드풀 워커용)."""
+    try:
+        with sqlite3.connect(str(db_file), timeout=_DB_TIMEOUT) as conn:
+            conn.row_factory = sqlite3.Row
+            return [dict(row) for row in conn.execute(query, params).fetchall()]
+    except Exception:
+        return []
+
 
 def _query_all_signal_dbs(market_id: str, query: str, params=(), aggregate: str = "rows") -> list:
-    """Run a query across all per-symbol signal DBs for a market and collect results. aggregate: rows = return all rows as list"""
+    """시장의 모든 종목별 시그널 DB에서 쿼리 병렬 실행 후 결과 수집."""
+    db_files = list_signal_db_files(market_id)[:_MAX_SIGNAL_DBS]
     all_rows = []
-    for db_file in list_signal_db_files(market_id)[:_MAX_SIGNAL_DBS]:
-        try:
-            with sqlite3.connect(str(db_file), timeout=2.0) as conn:
-                conn.row_factory = sqlite3.Row
-                for row in conn.execute(query, params).fetchall():
-                    all_rows.append(dict(row))
-        except Exception:
-            continue
+    with ThreadPoolExecutor(max_workers=_DB_POOL_SIZE) as pool:
+        futures = {pool.submit(_query_single_db, f, query, params): f for f in db_files}
+        for fut in as_completed(futures):
+            all_rows.extend(fut.result())
     return all_rows
 
 
 # ---------------------------------------------------------------------------
-# Signals Summary Resource
+# 시그널 요약 Resource
 # ---------------------------------------------------------------------------
 
+def _query_single_db_summary(db_file: Path) -> dict:
+    """단일 DB에서 시그널 요약 데이터 수집 (병렬 워커용)."""
+    try:
+        with sqlite3.connect(str(db_file), timeout=_DB_TIMEOUT) as conn:
+            conn.row_factory = sqlite3.Row
+            agg_rows = conn.execute("""
+                SELECT action, COUNT(*) as cnt,
+                       AVG(signal_score) as avg_s, AVG(confidence) as avg_c,
+                       interval
+                FROM signals
+                WHERE timestamp > (strftime('%s', 'now') - 86400)
+                GROUP BY action, interval
+            """).fetchall()
+            top_row = conn.execute("""
+                SELECT symbol, interval, signal_score, confidence, action,
+                       current_price, rsi, macd, wave_phase, risk_level,
+                       integrated_direction, integrated_strength, reason
+                FROM signals
+                WHERE interval = 'combined'
+                ORDER BY rowid DESC LIMIT 1
+            """).fetchone()
+            return {
+                "agg": [dict(r) for r in agg_rows],
+                "top": dict(top_row) if top_row else None,
+            }
+    except Exception:
+        return {"agg": [], "top": None}
+
+
 def _load_signals_summary(market_id: str) -> Dict[str, Any]:
-    """Load signal summary info (single-loop stats + actions + top aggregation)"""
+    """시그널 요약 정보 로드 (병렬 DB 조회)"""
     sig_dir = get_signals_dir(market_id)
     signal_dbs = list_signal_db_files(market_id)
 
     if not sig_dir or not sig_dir.exists() or not signal_dbs:
-        return {
-            "error": f"Signal DB not found for market: {market_id}",
-            "available_markets": ["crypto", "kr_stock", "us_stock"],
-        }
+        return mcp_error(
+            MCPErrorCode.DB_NOT_FOUND,
+            f"Signal DB not found for market: {market_id}",
+            action=MCPErrorAction.CHECK,
+            fallback_note="available_markets: crypto, kr_stock, us_stock",
+        )
 
     result = {
         "market_id": market_id,
@@ -75,48 +117,28 @@ def _load_signals_summary(market_id: str) -> Dict[str, Any]:
         action_agg: Dict[str, Dict] = {}
         top_candidates: List[Dict] = []
 
-        # Single DB loop — collect stats + action distribution + top signals simultaneously
-        for db_file in signal_dbs[:_MAX_SIGNAL_DBS]:
-            try:
-                with sqlite3.connect(str(db_file), timeout=2.0) as conn:
-                    conn.row_factory = sqlite3.Row
-
-                    # 24h aggregation (stats + actions)
-                    for row in conn.execute("""
-                        SELECT action, COUNT(*) as cnt,
-                               AVG(signal_score) as avg_s, AVG(confidence) as avg_c,
-                               interval
-                        FROM signals
-                        WHERE timestamp > (strftime('%s', 'now') - 86400)
-                        GROUP BY action, interval
-                    """).fetchall():
-                        cnt = row["cnt"] or 0
-                        if cnt == 0:
-                            continue
-                        total_signals += cnt
-                        score_sum += (row["avg_s"] or 0) * cnt
-                        conf_sum += (row["avg_c"] or 0) * cnt
-                        if row["interval"]:
-                            all_intervals.add(row["interval"])
-                        act = (row["action"] or "unknown").lower()
-                        if act not in action_agg:
-                            action_agg[act] = {"count": 0, "score_sum": 0.0}
-                        action_agg[act]["count"] += cnt
-                        action_agg[act]["score_sum"] += (row["avg_s"] or 0) * cnt
-
-                    # Last 1 hour combined top (max 1 per DB)
-                    top_row = conn.execute("""
-                        SELECT symbol, interval, signal_score, confidence, action,
-                               current_price, rsi, macd, wave_phase, risk_level,
-                               integrated_direction, integrated_strength, reason
-                        FROM signals
-                        WHERE timestamp > (strftime('%s', 'now') - 3600)
-                          AND interval = 'combined'
-                        ORDER BY signal_score DESC LIMIT 1
-                    """).fetchone()
-                    if top_row:
-                        top_candidates.append(dict(top_row))
-            except Exception:
+        # 병렬 DB 조회 — 150개를 20 스레드로 병렬 처리 (~15초)
+        db_subset = signal_dbs[:_MAX_SIGNAL_DBS]
+        with ThreadPoolExecutor(max_workers=_DB_POOL_SIZE) as pool:
+            futures = {pool.submit(_query_single_db_summary, f): f for f in db_subset}
+            for fut in as_completed(futures):
+                db_result = fut.result()
+                for row in db_result["agg"]:
+                    cnt = row.get("cnt") or 0
+                    if cnt == 0:
+                        continue
+                    total_signals += cnt
+                    score_sum += (row.get("avg_s") or 0) * cnt
+                    conf_sum += (row.get("avg_c") or 0) * cnt
+                    if row.get("interval"):
+                        all_intervals.add(row["interval"])
+                    act = (row.get("action") or "unknown").lower()
+                    if act not in action_agg:
+                        action_agg[act] = {"count": 0, "score_sum": 0.0}
+                    action_agg[act]["count"] += cnt
+                    action_agg[act]["score_sum"] += (row.get("avg_s") or 0) * cnt
+                if db_result["top"]:
+                    top_candidates.append(db_result["top"])
                 continue
 
         result["stats"] = {
@@ -157,30 +179,35 @@ def _load_signals_summary(market_id: str) -> Dict[str, Any]:
 
     except Exception as e:
         logger.error(f"Failed to load signals summary for {market_id}: {e}")
-        result["error"] = str(e)
+        result.update(mcp_error(
+            MCPErrorCode.DB_NOT_FOUND,
+            str(e),
+            action=MCPErrorAction.RETRY,
+            action_value="30",
+        ))
 
     return result
 
 
 def _generate_signals_summary(market_id: str, data: Dict) -> str:
-    """Generate signal summary text for LLM consumption"""
-    lines = [f"[{market_id.upper()} Signals Summary]"]
+    """LLM용 시그널 요약 텍스트"""
+    lines = [f"[{market_id.upper()} 시그널 요약]"]
 
     stats = data.get("stats", {})
     if not stats.get("error"):
-        lines.append(f"- 24h signals: {stats.get('total_signals_24h', 0)} entries, {stats.get('unique_symbols', 0)} symbols")
-        lines.append(f"- avg score: {stats.get('avg_signal_score', 0):.2f}, avg confidence: {stats.get('avg_confidence', 0):.2f}")
+        lines.append(f"- 24시간 시그널: {stats.get('total_signals_24h', 0)}건, {stats.get('unique_symbols', 0)}종목")
+        lines.append(f"- 평균 점수: {stats.get('avg_signal_score', 0):.2f}, 평균 신뢰도: {stats.get('avg_confidence', 0):.2f}")
 
     action_dist = data.get("action_distribution", {})
     if not isinstance(action_dist, dict) or not action_dist.get("error"):
         buy_count = action_dist.get("buy", {}).get("count", 0)
         sell_count = action_dist.get("sell", {}).get("count", 0)
         hold_count = action_dist.get("hold", {}).get("count", 0)
-        lines.append(f"- Action distribution: buy {buy_count}, sell {sell_count}, hold {hold_count}")
+        lines.append(f"- 액션 분포: 매수 {buy_count}, 매도 {sell_count}, 홀드 {hold_count}")
 
     top_signals = data.get("top_signals", [])
     if top_signals and isinstance(top_signals, list):
-        lines.append("- Top signals (last 1 hour):")
+        lines.append("- 상위 시그널 (최근 1시간):")
         for s in top_signals[:3]:
             lines.append(f"  {s['symbol']}({s['interval']}): {s['action']} score={s['signal_score']:.2f}")
 
@@ -188,15 +215,21 @@ def _generate_signals_summary(market_id: str, data: Dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Signal Feedback Resource (queried from trading_system.db)
+# 시그널 피드백 Resource (trading_system.db에서 조회)
 # ---------------------------------------------------------------------------
 
 def _load_signal_feedback(market_id: str) -> Dict[str, Any]:
-    """Load signal feedback (per-pattern success rates) from trading_system.db"""
+    """시그널 피드백 (패턴별 성공률) 로드 - trading_system.db 사용"""
     trading_db = get_market_db_path(market_id)
 
     if not trading_db or not trading_db.exists():
-        return {"error": f"Trading DB not found for market: {market_id}"}
+        return mcp_error(
+            MCPErrorCode.DB_NOT_FOUND,
+            f"Trading DB not found for market: {market_id}",
+            action=MCPErrorAction.CHECK,
+            fallback_tool=f"market://{market_id}/signals/summary",
+            fallback_note="시그널 요약에서 시장 존재 확인",
+        )
 
     try:
         with sqlite3.connect(str(trading_db)) as conn:
@@ -251,31 +284,41 @@ def _load_signal_feedback(market_id: str) -> Dict[str, Any]:
 
     except Exception as e:
         logger.error(f"Failed to load signal feedback for {market_id}: {e}")
-        return {"error": str(e)}
+        return mcp_error(
+            MCPErrorCode.DB_NOT_FOUND,
+            str(e),
+            action=MCPErrorAction.RETRY,
+            action_value="30",
+        )
 
 
 # ---------------------------------------------------------------------------
-# Role-based Signal Summary (market-wide)
+# 역할별 시그널 요약 (시장 전체)
 # ---------------------------------------------------------------------------
 
 _ROLE_ORDER = ['regime', 'swing', 'trend', 'timing']
 _ROLE_DESCRIPTIONS = {
-    'timing': 'Entry/exit timing optimization',
-    'trend': 'Short-term trend continuation/reversal confirmation',
-    'swing': 'Mid-term trend and wave structure analysis',
-    'regime': 'Market direction / long-term regime classification',
+    'timing': '실제 매수·매도 타이밍 최적화',
+    'trend': '단기 추세의 지속/반전 신호 확인',
+    'swing': '중기 추세와 파동 구조 파악',
+    'regime': '시장 방향성 / 장기 레짐 구분',
 }
 
 
 def _load_signals_role_summary(market_id: str) -> Dict[str, Any]:
-    """Market-wide role-based signal summary (per-symbol DB iteration, hierarchy_context aggregation)"""
+    """시장 전체 역할별 시그널 요약 (종목별 DB 순회, hierarchy_context 집계)"""
     import json as _json, os
 
     signal_dbs = list_signal_db_files(market_id)
     if not signal_dbs:
-        return {"error": f"No signal DBs found for market: {market_id}"}
+        return mcp_error(
+            MCPErrorCode.DB_NOT_FOUND,
+            f"No signal DBs found for market: {market_id}",
+            action=MCPErrorAction.CHECK,
+            fallback_note="available_markets: crypto, kr_stock, us_stock",
+        )
 
-    # Interval -> role mapping
+    # 인터벌 → 역할 매핑
     env_ivs = os.environ.get('CANDLE_INTERVALS', '15m,240m,1d')
     ivs = sorted(
         [iv.strip() for iv in env_ivs.split(',') if iv.strip()],
@@ -297,58 +340,62 @@ def _load_signals_role_summary(market_id: str) -> Dict[str, Any]:
     elif len(ivs) == 2:
         role_map = {ivs[0]: 'timing', ivs[1]: 'regime'}
 
-    # Role-based aggregation
+    # 역할별 집계
     role_agg = {r: {'buy': 0, 'sell': 0, 'hold': 0, 'score_sum': 0.0, 'count': 0}
                 for r in _ROLE_ORDER}
     alignment_sum = 0.0
     alignment_count = 0
     position_keys = {}
 
-    for db_file in signal_dbs[:_MAX_SIGNAL_DBS]:
+    def _query_role_single(db_file):
         try:
-            with sqlite3.connect(str(db_file), timeout=2.0) as conn:
+            with sqlite3.connect(str(db_file), timeout=_DB_TIMEOUT) as conn:
                 conn.row_factory = sqlite3.Row
-
-                # Latest signal per interval
-                for row in conn.execute("""
+                sig_rows = conn.execute("""
                     SELECT interval, signal_score, action
-                    FROM signals
-                    WHERE timestamp > (strftime('%s', 'now') - 3600)
-                      AND interval != 'combined'
-                    ORDER BY timestamp DESC
-                """).fetchall():
-                    iv = row['interval']
-                    role = role_map.get(iv)
-                    if not role or role not in role_agg:
-                        continue
-                    agg = role_agg[role]
-                    act = (row['action'] or 'hold').lower()
-                    if act in agg:
-                        agg[act] += 1
-                    agg['score_sum'] += float(row['signal_score'] or 0)
-                    agg['count'] += 1
-
-                # Read hierarchy_context from combined
+                    FROM signals WHERE interval != 'combined'
+                    ORDER BY rowid DESC LIMIT 20
+                """).fetchall()
                 hrow = conn.execute("""
                     SELECT hierarchy_context FROM signals
                     WHERE interval = 'combined'
-                    ORDER BY timestamp DESC LIMIT 1
+                    ORDER BY rowid DESC LIMIT 1
                 """).fetchone()
-                if hrow and hrow['hierarchy_context']:
-                    try:
-                        hctx = _json.loads(hrow['hierarchy_context'])
-                        al = float(hctx.get('alignment_score', 0.5))
-                        alignment_sum += al
-                        alignment_count += 1
-                        pk = hctx.get('position_key', '')
-                        if pk:
-                            position_keys[pk] = position_keys.get(pk, 0) + 1
-                    except Exception:
-                        pass
+                return {
+                    "sigs": [dict(r) for r in sig_rows],
+                    "hctx": hrow['hierarchy_context'] if hrow and hrow['hierarchy_context'] else None,
+                }
         except Exception:
-            continue
+            return {"sigs": [], "hctx": None}
 
-    # Format role summary
+    with ThreadPoolExecutor(max_workers=_DB_POOL_SIZE) as pool:
+        futures = {pool.submit(_query_role_single, f): f for f in signal_dbs[:_MAX_SIGNAL_DBS]}
+        for fut in as_completed(futures):
+            db_result = fut.result()
+            for row in db_result["sigs"]:
+                iv = row.get('interval')
+                role = role_map.get(iv)
+                if not role or role not in role_agg:
+                    continue
+                agg = role_agg[role]
+                act = (row.get('action') or 'hold').lower()
+                if act in agg:
+                    agg[act] += 1
+                agg['score_sum'] += float(row.get('signal_score') or 0)
+                agg['count'] += 1
+            if db_result["hctx"]:
+                try:
+                    hctx = _json.loads(db_result["hctx"])
+                    al = float(hctx.get('alignment_score', 0.5))
+                    alignment_sum += al
+                    alignment_count += 1
+                    pk = hctx.get('position_key', '')
+                    if pk:
+                        position_keys[pk] = position_keys.get(pk, 0) + 1
+                except Exception:
+                    pass
+
+    # 역할별 요약 포맷
     roles = {}
     for role in _ROLE_ORDER:
         agg = role_agg[role]
@@ -366,21 +413,21 @@ def _load_signals_role_summary(market_id: str) -> Dict[str, Any]:
             },
         }
 
-    # Combined meta
+    # 통합 메타
     top_combos = sorted(position_keys.items(), key=lambda x: x[1], reverse=True)[:5]
 
-    # LLM summary
-    lines = [f"[{market_id.upper()} Role-based signal summary]"]
+    # LLM 요약
+    lines = [f"[{market_id.upper()} 역할별 시그널 요약]"]
     for role in _ROLE_ORDER:
         r = roles[role]
-        lines.append(f"  {role}({r['interval']}): {r['signal_count']} entries, "
+        lines.append(f"  {role}({r['interval']}): {r['signal_count']}건, "
                      f"avg={r['avg_score']:.2f}, buy={r['action_distribution']['buy']}, "
                      f"sell={r['action_distribution']['sell']}")
     if alignment_count > 0:
         avg_align = alignment_sum / alignment_count
-        lines.append(f"  [Combined] avg alignment={avg_align:.2f} ({alignment_count} symbols)")
+        lines.append(f"  [통합] 평균 alignment={avg_align:.2f} ({alignment_count}종목)")
     if top_combos:
-        lines.append(f"  [Combination] top: {', '.join(f'{k}({v})' for k, v in top_combos[:3])}")
+        lines.append(f"  [조합] 상위: {', '.join(f'{k}({v})' for k, v in top_combos[:3])}")
 
     return {
         'market_id': market_id,
@@ -396,43 +443,102 @@ def _load_signals_role_summary(market_id: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Resource Registration
+# AI Summary
 # ---------------------------------------------------------------------------
 
+def _ai_summary_signals(data: dict) -> str:
+    stats = data.get("stats", {})
+    total = stats.get("total_signals_24h", 0)
+    symbols = stats.get("unique_symbols", 0)
+    avg_score = stats.get("avg_signal_score", 0)
+    dist = data.get("action_distribution", {})
+    buy = dist.get("BUY", {}).get("count", 0)
+    sell = dist.get("SELL", {}).get("count", 0)
+    hold = dist.get("HOLD", {}).get("count", 0)
+    top_sigs = data.get("top_signals", [])
+    top_part = ""
+    if top_sigs:
+        s = top_sigs[0]
+        top_part = f" 상위: {s.get('symbol', '?')}({s.get('action', '?')}, {s.get('signal_score', 0):.1f})"
+    market_id = data.get("market_id", "")
+    return f"{market_id} 시그널: 24h {total}건, {symbols}종목. 매수/매도/홀드={buy}/{sell}/{hold}. avg점수={avg_score:.1f}.{top_part}"
+
+
+# ---------------------------------------------------------------------------
+# Resource 등록 함수
+# ---------------------------------------------------------------------------
+
+_RESOURCE_TIMEOUT = 30  # 개별 리소스 최대 처리 시간 (초)
+
+
+async def _safe_load(func, *args) -> Any:
+    """asyncio.to_thread + timeout 보호. 타임아웃 시 에러 dict 반환."""
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(func, *args),
+            timeout=_RESOURCE_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("[Resource] %s timeout (%ds)", func.__name__, _RESOURCE_TIMEOUT)
+        err = mcp_error(
+            MCPErrorCode.TIMEOUT,
+            f"Resource timeout ({_RESOURCE_TIMEOUT}s)",
+            action=MCPErrorAction.RETRY,
+            action_value="30",
+        )
+        err["_timeout"] = True
+        return err
+    except Exception as e:
+        logger.error("[Resource] %s error: %s", func.__name__, e)
+        return mcp_error(
+            MCPErrorCode.DB_NOT_FOUND,
+            str(e),
+            action=MCPErrorAction.RETRY,
+            action_value="30",
+        )
+
+
 def register_signal_resources(mcp, cache):
-    """Register signal system Resources"""
+    """시그널 시스템 Resource 등록"""
 
     @mcp.resource("market://{market_id}/signals/summary")
-    def signals_summary(market_id: str) -> Dict[str, Any]:
-        """Signal summary info (per-symbol DB aggregation). Returns: stats, action_distribution, top_signals"""
+    async def signals_summary(market_id: str) -> Dict[str, Any]:
+        """[역할] 시장 전체 시그널 집계(24h 시그널 수, 액션 분포, 상위 시그널). [호출 시점] 시장 시그널 동향 파악 시. 개별 종목 전에 먼저 호출. [선행 조건] 없음 (시그널 최상위). [후속 추천] get_signals(market_id, coin), market://{market_id}/signals/roles. [주의] 종목별 DB 병렬 순회(최대 150개). TTL=300초. 응답 15초+. [출력 스키마] ai_summary 래핑. full_data: market_id(str), db_count(int), stats{total_signals_24h,unique_symbols,avg_signal_score,avg_confidence}, action_distribution{action→{count,avg_score}}, top_signals[{symbol,interval,signal_score,confidence,action,rsi,macd,wave_phase,direction,strength,reason}], _llm_summary(str)."""
         cache_key = f"signals_summary_{market_id}"
         cached = cache.get(cache_key, ttl=300)
         if cached:
+            if not cached.get("error"):
+                cached = wrap_with_ai_summary(cached, "signal_system", _ai_summary_signals)
             return to_resource_text(cached)
-        data = _load_signals_summary(market_id)
-        cache.set(cache_key, data)
+        data = await _safe_load(_load_signals_summary, market_id)
+        if not data.get("_timeout"):
+            cache.set(cache_key, data)
+        if not data.get("error"):
+            data = wrap_with_ai_summary(data, "signal_system", _ai_summary_signals)
         return to_resource_text(data)
 
     @mcp.resource("market://{market_id}/signals/feedback")
-    def signals_feedback(market_id: str) -> Dict[str, Any]:
-        """Signal feedback (per-pattern/strategy success rates). Returns: top_patterns, top_strategies"""
+    async def signals_feedback(market_id: str) -> Dict[str, Any]:
+        """[역할] 시그널 패턴/전략별 성공률 데이터. [호출 시점] 시그널 패턴 성공률 분석 시. [선행 조건] signals/summary 권장. [후속 추천] analyze_trades. [주의] 최소 10건 이상 거래 패턴만. TTL=300초. [출력 스키마] market_id(str), top_patterns[{pattern,success_rate,avg_profit,total_trades,confidence}], top_strategies[{strategy,market_condition,success_rate,avg_profit,total_trades}]."""
         cache_key = f"signals_feedback_{market_id}"
         cached = cache.get(cache_key, ttl=300)
         if cached:
             return to_resource_text(cached)
-        data = _load_signal_feedback(market_id)
-        cache.set(cache_key, data)
+        data = await _safe_load(_load_signal_feedback, market_id)
+        if not data.get("_timeout"):
+            cache.set(cache_key, data)
         return to_resource_text(data)
 
     @mcp.resource("market://{market_id}/signals/roles")
-    def signals_roles_summary(market_id: str) -> Dict[str, Any]:
-        """Role-based (timing/trend/swing/regime) signal summary. Returns: roles, hierarchy_meta"""
+    async def signals_roles_summary(market_id: str) -> Dict[str, Any]:
+        """[역할] 역할별(timing/trend/swing/regime) 시그널 집계와 계층 정렬도. [호출 시점] 시간프레임간 시그널 일치/불일치 분석 시. [선행 조건] signals/summary 권장. [후속 추천] get_role_analysis(market_id, coin). [주의] hierarchy_context 기반. TTL=300초. [출력 스키마] market_id(str), roles{role→{interval,description,signal_count,avg_score,action_distribution}}, hierarchy_meta{avg_alignment,symbols_with_hierarchy}, _llm_summary(str)."""
         cache_key = f"signals_roles_{market_id}"
         cached = cache.get(cache_key, ttl=300)
         if cached:
             return to_resource_text(cached)
-        data = _load_signals_role_summary(market_id)
-        cache.set(cache_key, data)
+        data = await _safe_load(_load_signals_role_summary, market_id)
+        if not data.get("_timeout"):
+            cache.set(cache_key, data)
         return to_resource_text(data)
 
     logger.info("  Signal System Resources registered (per-symbol DB mode, +roles)")

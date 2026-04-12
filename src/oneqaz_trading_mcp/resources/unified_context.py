@@ -1,31 +1,32 @@
 # -*- coding: utf-8 -*-
 """
-Unified Context Resource
-========================
-Core layer that merges internal (market technical analysis) and external
-(external_context macro/news) data.
+통합 컨텍스트 Resource (Unified Context)
+========================================
+내부(market 기술적 분석) + 외부(external_context 매크로/뉴스)를 합치는 핵심 레이어.
 
-3 Levels:
-  Level 1 - Symbol-level:  BTC technical indicators + BTC-related news/events
-  Level 2 - Market-level:  Impact of global events (e.g. FOMC) on the entire crypto market
-  Level 3 - Cross-market:  Gold up + BTC down = risk-off, Bond yields up + Stocks down = rate sensitive
+3가지 레벨:
+  Level 1 - 심볼 단위:  BTC 기술적 지표 + BTC 관련 뉴스/이벤트
+  Level 2 - 시장 단위:  FOMC 같은 글로벌 이벤트가 crypto 전체에 미치는 영향
+  Level 3 - 교차 시장:  금↑+BTC↓ = risk-off, 국채금리↑+주식↓ = 금리민감
 
-Data Sources:
-  - market/{market_id}/data_storage/ -> Technical analysis (internal)
-  - external_context/data_storage/   -> News/events/macro (external)
-  - market/global_regime/            -> Global regime (cross-market basis)
+데이터 소스:
+  - market/{market_id}/data_storage/ → 기술적 분석 (내부)
+  - external_context/data_storage/   → 뉴스/이벤트/매크로 (외부)
+  - market/global_regime/            → 글로벌 레짐 (교차 시장 기초)
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 import logging
+import threading
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 
-from oneqaz_trading_mcp.config import (
+from mcps.config import (
     PROJECT_ROOT,
     CACHE_TTL_MARKET_STATUS,
     get_market_db_path,
@@ -35,17 +36,21 @@ from oneqaz_trading_mcp.config import (
     get_structure_summary_path,
     GLOBAL_REGIME_SUMMARY_JSON,
 )
-from oneqaz_trading_mcp.response import (
+from mcps.resources.resource_response import (
     build_resource_explanation,
     to_resource_text,
     with_explanation_contract,
+    mcp_error,
+    MCPErrorCode,
+    MCPErrorAction,
+    wrap_with_ai_summary,
 )
 
 logger = logging.getLogger("MarketMCP")
 
 CACHE_TTL_UNIFIED = 120
 
-# Market ID -> global_regime category mapping (for cross-analysis)
+# 시장 ID → global_regime 카테고리 매핑 (교차 분석용)
 MARKET_TO_REGIME_CATEGORY = {
     "crypto": None,
     "kr_stock": None,
@@ -65,107 +70,124 @@ ALL_MARKETS = ["crypto", "kr_stock", "us_stock"]
 ALL_CATEGORIES = ["commodities", "forex", "bonds", "vix", "credit", "liquidity", "inflation"]
 ALL_STRUCTURE_MARKETS = ["us_stock", "kr_stock", "crypto"]
 
-# --- Cross-market correlation pattern definitions ---
+# ─── 교차 시장 상관관계 패턴 정의 ─────────────────────────────────────────
 CROSS_MARKET_PATTERNS = [
     {
         "id": "gold_btc_inverse",
-        "name": "Gold up BTC down (risk aversion)",
+        "name": "금↑ BTC↓ (위험회피)",
         "pair": ("GC=F", "BTC"),
         "source_market": ("commodities", "crypto"),
         "expected": "inverse",
         "interpretation": "risk_off",
-        "description": "When gold rises and BTC falls, risk-off sentiment is strong",
+        "description": "금이 상승하고 BTC가 하락하면 위험회피(risk-off) 심리가 강함",
     },
     {
         "id": "gold_btc_aligned",
-        "name": "Gold up BTC up (inflation hedge)",
+        "name": "금↑ BTC↑ (인플레이션 헤지)",
         "pair": ("GC=F", "BTC"),
         "source_market": ("commodities", "crypto"),
         "expected": "aligned",
         "interpretation": "inflation_hedge",
-        "description": "When gold and BTC rise together, inflation hedge demand is present",
+        "description": "금과 BTC가 동시 상승하면 인플레이션 헤지 수요",
     },
     {
         "id": "dxy_em_inverse",
-        "name": "Dollar up Emerging markets down",
+        "name": "달러↑ 신흥시장↓",
         "pair": ("DX-Y.NYB", None),
         "source_market": ("forex", "kr_stock"),
         "expected": "inverse",
         "interpretation": "dollar_strength",
-        "description": "Dollar strength is negative for emerging markets",
+        "description": "달러 강세는 신흥시장에 부정적",
     },
     {
         "id": "bond_yield_stock_inverse",
-        "name": "Bond yields up Stocks down (rate sensitive)",
+        "name": "국채금리↑ 주식↓ (금리민감)",
         "pair": ("^TNX", None),
         "source_market": ("bonds", "us_stock"),
         "expected": "inverse",
         "interpretation": "rate_sensitivity",
-        "description": "Rising bond yields put downward pressure on equities",
+        "description": "국채금리 상승은 주식시장에 하방 압력",
     },
     {
         "id": "oil_inflation",
-        "name": "Oil up (inflation pressure)",
+        "name": "유가↑ (인플레이션 압력)",
         "pair": ("CL=F", None),
         "source_market": ("commodities", None),
         "expected": "signal",
         "interpretation": "inflation_pressure",
-        "description": "Rising oil prices create inflation pressure affecting all financial markets",
+        "description": "유가 상승은 인플레이션 압력으로 전체 금융시장에 영향",
     },
     {
         "id": "vix_risk",
-        "name": "VIX up (fear spreading)",
+        "name": "VIX↑ (공포 확산)",
         "pair": ("^VIX", None),
         "source_market": ("vix", None),
         "expected": "signal",
         "interpretation": "fear_spike",
-        "description": "VIX spike is a risk-off signal across all markets",
+        "description": "VIX 급등은 전 시장 위험회피 신호",
     },
     {
         "id": "vxn_tech_fear",
-        "name": "VXN up (tech fear)",
+        "name": "VXN↑ (기술주 공포)",
         "pair": ("^VXN", None),
         "source_market": ("vix", None),
         "expected": "signal",
         "interpretation": "tech_fear",
-        "description": "NASDAQ volatility spike signals simultaneous decline in tech stocks and crypto",
+        "description": "나스닥 변동성 급등은 기술주·코인 동반 하락 신호",
     },
 ]
 
-# Global event keywords -> affected markets
+# 글로벌 이벤트 키워드 → 영향받는 시장
 GLOBAL_EVENT_IMPACT = {
     "FOMC": ["crypto", "kr_stock", "us_stock", "bonds", "forex", "liquidity", "credit"],
-    "interest rate": ["crypto", "kr_stock", "us_stock", "bonds", "forex", "liquidity", "credit"],
+    "금리": ["crypto", "kr_stock", "us_stock", "bonds", "forex", "liquidity", "credit"],
     "CPI": ["crypto", "kr_stock", "us_stock", "bonds", "commodities", "inflation"],
     "PCE": ["crypto", "us_stock", "bonds", "inflation"],
-    "employment": ["us_stock", "bonds", "forex"],
-    "inflation": ["crypto", "kr_stock", "us_stock", "bonds", "commodities", "inflation"],
+    "고용": ["us_stock", "bonds", "forex"],
+    "인플레이션": ["crypto", "kr_stock", "us_stock", "bonds", "commodities", "inflation"],
     "GDP": ["kr_stock", "us_stock", "bonds"],
     "OPEC": ["commodities", "kr_stock", "us_stock", "inflation"],
-    "Fed": ["crypto", "kr_stock", "us_stock", "bonds", "forex", "liquidity"],
+    "연준": ["crypto", "kr_stock", "us_stock", "bonds", "forex", "liquidity"],
     "BOJ": ["forex", "kr_stock", "bonds", "liquidity"],
     "ECB": ["forex", "us_stock", "bonds", "liquidity"],
-    "tariff": ["kr_stock", "us_stock", "commodities", "inflation"],
-    "war": ["crypto", "kr_stock", "us_stock", "commodities", "forex", "bonds", "vix", "credit"],
-    "sanctions": ["crypto", "commodities", "forex", "credit"],
-    "volatility": ["crypto", "kr_stock", "us_stock", "vix", "credit"],
-    "fear": ["crypto", "kr_stock", "us_stock", "vix", "credit"],
-    "liquidity": ["crypto", "kr_stock", "us_stock", "bonds", "liquidity"],
-    "credit": ["bonds", "credit", "vix"],
+    "관세": ["kr_stock", "us_stock", "commodities", "inflation"],
+    "전쟁": ["crypto", "kr_stock", "us_stock", "commodities", "forex", "bonds", "vix", "credit"],
+    "제재": ["crypto", "commodities", "forex", "credit"],
+    "변동성": ["crypto", "kr_stock", "us_stock", "vix", "credit"],
+    "공포": ["crypto", "kr_stock", "us_stock", "vix", "credit"],
+    "유동성": ["crypto", "kr_stock", "us_stock", "bonds", "liquidity"],
+    "신용": ["bonds", "credit", "vix"],
 }
 
 
-# --- DB Utilities ---
+# ─── DB 유틸 ──────────────────────────────────────────────────────────────
+
+_conn_cache: Dict[str, sqlite3.Connection] = {}
+_conn_cache_lock = threading.Lock()
+
 
 def _safe_connect(db_path: Path) -> Optional[sqlite3.Connection]:
+    """DB 커넥션 캐시 — 동일 경로에 대해 재사용 (메모리/성능 개선)."""
     if not db_path or not db_path.exists():
         return None
-    try:
-        conn = sqlite3.connect(str(db_path), timeout=10)
-        conn.row_factory = sqlite3.Row
-        return conn
-    except Exception:
-        return None
+    key = str(db_path)
+    with _conn_cache_lock:
+        conn = _conn_cache.get(key)
+        if conn is not None:
+            try:
+                conn.execute("SELECT 1")
+                return conn
+            except Exception:
+                _conn_cache.pop(key, None)
+        try:
+            conn = sqlite3.connect(key, timeout=5, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")
+            _conn_cache[key] = conn
+            return conn
+        except Exception:
+            return None
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
@@ -182,11 +204,11 @@ def _fetch_rows(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> List[
         return []
 
 
-# --- Level 1: Symbol-level internal+external merge ---
+# ─── Level 1: 심볼 단위 내부+외부 병합 ───────────────────────────────────
 
 def _load_internal_symbol_snapshot(market_id: str, symbol: str) -> Dict[str, Any]:
-    """Internal technical data: latest analysis from signal DB"""
-    from oneqaz_trading_mcp.config import get_signal_db_path
+    """내부 기술적 데이터: 시그널 DB에서 최신 분석"""
+    from mcps.config import get_signal_db_path
     db_path = get_signal_db_path(market_id, symbol)
     if not db_path or not db_path.exists():
         return {}
@@ -199,11 +221,11 @@ def _load_internal_symbol_snapshot(market_id: str, symbol: str) -> Dict[str, Any
         """)
         return rows[0] if rows else {}
     finally:
-        conn.close()
+        pass  # conn은 캐시에서 재사용 (close 불필요)
 
 
 def _load_external_symbol_snapshot(market_id: str, symbol: str) -> Dict[str, Any]:
-    """External context data: news/events/fundamentals for the symbol"""
+    """외부 컨텍스트 데이터: 해당 심볼의 뉴스/이벤트/펀더멘탈"""
     db_path = get_external_db_path(market_id)
     conn = _safe_connect(db_path)
     if not conn:
@@ -234,11 +256,11 @@ def _load_external_symbol_snapshot(market_id: str, symbol: str) -> Dict[str, Any
             result["fundamentals"] = rows[0] if rows else {}
         return result
     finally:
-        conn.close()
+        pass  # conn은 캐시에서 재사용 (close 불필요)
 
 
 def _merge_symbol_context(market_id: str, symbol: str) -> Dict[str, Any]:
-    """Merge symbol-level internal + external context"""
+    """심볼 단위 내부+외부 병합"""
     internal = _load_internal_symbol_snapshot(market_id, symbol)
     external = _load_external_symbol_snapshot(market_id, symbol)
 
@@ -273,10 +295,10 @@ def _merge_symbol_context(market_id: str, symbol: str) -> Dict[str, Any]:
     }
 
 
-# --- Level 2: Market-level (global event impact) ---
+# ─── Level 2: 시장 단위 (글로벌 이벤트 영향) ─────────────────────────────
 
 def _load_global_events_affecting(market_id: str) -> List[Dict[str, Any]]:
-    """Collect global events affecting market_id from all external context DBs"""
+    """모든 외부 컨텍스트 DB에서 market_id에 영향을 주는 글로벌 이벤트 수집"""
     affecting = []
     news_db = get_external_db_path("news")
     conn = _safe_connect(news_db)
@@ -299,7 +321,7 @@ def _load_global_events_affecting(market_id: str) -> List[Dict[str, Any]]:
                             })
                             break
         finally:
-            conn.close()
+            pass  # conn은 캐시에서 재사용 (close 불필요)
 
     for cat in ALL_CATEGORIES:
         cat_db = get_external_db_path(cat)
@@ -326,17 +348,23 @@ def _load_global_events_affecting(market_id: str) -> List[Dict[str, Any]]:
                             })
                             break
         finally:
-            cat_conn.close()
+            pass  # conn 캐시 재사용
 
     return affecting
 
 
 def _load_market_internal_summary(market_id: str) -> Dict[str, Any]:
-    """Market-wide internal summary (trading_system.db)"""
+    """시장 전체 내부 요약 (trading_system.db)"""
     db_path = get_market_db_path(market_id)
     conn = _safe_connect(db_path)
     if not conn:
-        return {"error": f"No trading DB for {market_id}"}
+        return mcp_error(
+            MCPErrorCode.DB_NOT_FOUND,
+            f"No trading DB for {market_id}",
+            action=MCPErrorAction.CHECK,
+            action_value=f"market://{market_id}/status",
+            market_id=market_id,
+        )
     try:
         result = {}
         try:
@@ -362,11 +390,11 @@ def _load_market_internal_summary(market_id: str) -> Dict[str, Any]:
             pass
         return result
     finally:
-        conn.close()
+        pass  # conn은 캐시에서 재사용 (close 불필요)
 
 
 def _load_market_external_summary(market_id: str) -> Dict[str, Any]:
-    """Market-wide external summary"""
+    """시장 전체 외부 요약"""
     db_path = get_external_db_path(market_id)
     conn = _safe_connect(db_path)
     if not conn:
@@ -404,11 +432,11 @@ def _load_market_external_summary(market_id: str) -> Dict[str, Any]:
 
         return result
     finally:
-        conn.close()
+        pass  # conn은 캐시에서 재사용 (close 불필요)
 
 
 def _build_unified_market_context(market_id: str) -> Dict[str, Any]:
-    """Market-level unified context (Level 1+2)"""
+    """시장 단위 통합 컨텍스트 (Level 1+2)"""
     internal = _load_market_internal_summary(market_id)
     external = _load_market_external_summary(market_id)
     global_events = _load_global_events_affecting(market_id)
@@ -440,20 +468,20 @@ def _build_unified_llm_summary(
     external: Dict,
     global_events: List[Dict],
 ) -> str:
-    lines = [f"[{market_id.upper()} Unified Context]"]
+    lines = [f"[{market_id.upper()} 통합 컨텍스트]"]
 
     regime = internal.get("regime", "Unknown")
     pos_count = internal.get("positions_count", 0)
     avg_pnl = internal.get("avg_pnl", 0)
-    lines.append(f"Internal: regime={regime}, positions={pos_count}, avg_pnl={avg_pnl:+.2f}%")
+    lines.append(f"내부: 레짐={regime}, 포지션={pos_count}개, 평균수익={avg_pnl:+.2f}%")
 
     news_count = len(external.get("recent_news", []))
     hi_count = external.get("high_impact_news_count", 0)
     event_count = len(external.get("upcoming_events", []))
-    lines.append(f"External: news={news_count}(high_impact={hi_count}), upcoming_events={event_count}")
+    lines.append(f"외부: 뉴스={news_count}건(고영향={hi_count}), 예정이벤트={event_count}건")
 
     if global_events:
-        lines.append(f"Global event impact: {len(global_events)} events")
+        lines.append(f"글로벌 이벤트 영향: {len(global_events)}건")
         for ev in global_events[:3]:
             title = ev.get("title", "")[:60]
             kw = ev.get("trigger_keyword", "")
@@ -461,11 +489,11 @@ def _build_unified_llm_summary(
 
     risk_count = external.get("risk_flagged_news_count", 0)
     if risk_count:
-        lines.append(f"Risk-flagged news: {risk_count}")
+        lines.append(f"⚠ 리스크 감지 뉴스: {risk_count}건")
 
     top_news = external.get("recent_news", [])[:3]
     if top_news:
-        lines.append("Recent key news:")
+        lines.append("최근 주요 뉴스:")
         for n in top_news:
             title = (n.get("title") or "")[:60]
             score = n.get("sentiment_score")
@@ -475,17 +503,17 @@ def _build_unified_llm_summary(
             model_tag = f"[{model}]" if model and model != "keyword_fallback" else ""
             score_str = ""
             if isinstance(score, (int, float)):
-                conf_str = f", confidence={conf:.0%}" if isinstance(conf, (int, float)) and conf > 0 else ""
+                conf_str = f", 신뢰도={conf:.0%}" if isinstance(conf, (int, float)) and conf > 0 else ""
                 score_str = f" ({label}={score:+.2f}{conf_str}) {model_tag}"
             risk_raw = n.get("risk_flags", "")
             risk_str = ""
             if risk_raw and risk_raw not in ("[]", "null", ""):
-                risk_str = f" RISK:{risk_raw}"
+                risk_str = f" ⚠{risk_raw}"
             lines.append(f"  - {title}{score_str}{risk_str}")
 
     upcoming = external.get("upcoming_events", [])[:2]
     if upcoming:
-        lines.append("Upcoming events:")
+        lines.append("예정 이벤트:")
         for e in upcoming:
             title = (e.get("title") or "")[:50]
             sched = (e.get("scheduled_at") or "")[:10]
@@ -494,10 +522,10 @@ def _build_unified_llm_summary(
     return "\n".join(lines)
 
 
-# --- Level 3: Cross-market correlations ---
+# ─── Level 3: 교차 시장 상관관계 ─────────────────────────────────────────
 
 def _load_regime_directions() -> Dict[str, Dict[str, Any]]:
-    """Load direction per category/symbol from global regime"""
+    """글로벌 레짐에서 카테고리/심볼별 방향성 로드"""
     directions: Dict[str, Dict[str, Any]] = {}
 
     for category in ALL_CATEGORIES:
@@ -528,7 +556,7 @@ def _load_regime_directions() -> Dict[str, Dict[str, Any]]:
                     "raw_direction": row.get("integrated_direction", ""),
                 }
         finally:
-            conn.close()
+            pass  # conn은 캐시에서 재사용 (close 불필요)
 
     for market_id in ALL_MARKETS:
         db_path = get_market_db_path(market_id)
@@ -550,16 +578,16 @@ def _load_regime_directions() -> Dict[str, Dict[str, Any]]:
                 "regime": status.get("market_regime", "Unknown"),
             }
         finally:
-            conn.close()
+            pass  # conn은 캐시에서 재사용 (close 불필요)
 
     return directions
 
 
 def _classify_direction(row: Dict) -> str:
     d = (row.get("integrated_direction") or "").lower()
-    if any(k in d for k in ("bull", "up", "long")):
+    if any(k in d for k in ("bull", "up", "long", "상승")):
         return "up"
-    if any(k in d for k in ("bear", "down", "short")):
+    if any(k in d for k in ("bear", "down", "short", "하락")):
         return "down"
     regime = (row.get("regime_label") or row.get("regime_stage") or "").lower()
     if any(k in regime for k in ("bull", "risk_on", "risk-on")):
@@ -570,7 +598,7 @@ def _classify_direction(row: Dict) -> str:
 
 
 def _detect_cross_market_correlations(directions: Dict[str, Dict]) -> List[Dict[str, Any]]:
-    """Detect cross-market correlation patterns"""
+    """교차 시장 상관관계 패턴 감지"""
     detected = []
 
     for pattern in CROSS_MARKET_PATTERNS:
@@ -650,7 +678,7 @@ def _detect_cross_market_correlations(directions: Dict[str, Dict]) -> List[Dict[
 
 
 def _build_cross_market_context() -> Dict[str, Any]:
-    """Full cross-market analysis (Level 3)"""
+    """교차 시장 전체 분석 (Level 3)"""
     directions = _load_regime_directions()
     correlations = _detect_cross_market_correlations(directions)
 
@@ -685,7 +713,7 @@ def _build_cross_market_context() -> Dict[str, Any]:
 
 
 def _load_all_structure_briefs() -> Dict[str, Any]:
-    """Load structure summary briefs for all markets"""
+    """모든 시장의 구조 요약 brief 로드"""
     result: Dict[str, Any] = {}
     for market_id in ALL_STRUCTURE_MARKETS:
         path = get_structure_summary_path(market_id)
@@ -736,51 +764,68 @@ def _build_cross_market_llm_summary(
     dominant: Optional[str],
     regime: Dict,
 ) -> str:
-    lines = ["[Cross-Market Correlation Analysis]"]
-    lines.append(f"Global regime: {regime.get('overall_regime', '?')} (score: {regime.get('overall_score', 0):.2f})")
+    lines = ["[교차 시장 상관관계 분석]"]
+    lines.append(f"글로벌 레짐: {regime.get('overall_regime', '?')} (점수: {regime.get('overall_score', 0):.2f})")
 
     market_dirs = {k: v for k, v in directions.items() if k.startswith("_market_")}
     if market_dirs:
-        lines.append("Market directions:")
+        lines.append("시장별 방향:")
         for k, v in market_dirs.items():
             name = k.replace("_market_", "")
             lines.append(f"  - {name}: {v['direction']} ({v.get('regime', '')})")
 
     if active_patterns:
-        lines.append(f"\nActive patterns ({len(active_patterns)}):")
+        lines.append(f"\n활성 패턴 ({len(active_patterns)}개):")
         for p in active_patterns:
-            lines.append(f"  - {p['pattern_name']}: {p['description']}")
+            lines.append(f"  ⚡ {p['pattern_name']}: {p['description']}")
         if dominant:
-            INTERP_EN = {
-                "risk_off": "Risk-off sentiment dominant",
-                "risk_on": "Risk-on sentiment dominant",
-                "inflation_hedge": "Inflation hedge demand",
-                "dollar_strength": "Dollar strength impact",
-                "rate_sensitivity": "Rate-sensitive phase",
-                "inflation_pressure": "Inflation pressure",
-                "fear_spike": "Fear spike",
+            INTERP_KO = {
+                "risk_off": "위험회피 심리 우세",
+                "risk_on": "위험선호 심리 우세",
+                "inflation_hedge": "인플레이션 헤지 수요",
+                "dollar_strength": "달러 강세 영향",
+                "rate_sensitivity": "금리 민감 구간",
+                "inflation_pressure": "인플레이션 압력",
+                "fear_spike": "공포 급등",
             }
-            lines.append(f"\nDominant interpretation: {INTERP_EN.get(dominant, dominant)}")
+            lines.append(f"\n지배적 해석: {INTERP_KO.get(dominant, dominant)}")
     else:
-        lines.append("\nNo active cross-market patterns - no clear inter-market correlation signals detected")
+        lines.append("\n활성 교차 패턴 없음 - 시장간 뚜렷한 상관 신호 미감지")
 
     return "\n".join(lines)
 
 
-# --- Integrated endpoints: combine everything ---
+# ─── 통합 엔드포인트: 전체 합치기 ─────────────────────────────────────────
 
 def _load_feature_gate_summary(market_id: str) -> Dict[str, Any]:
-    """Load Feature Gate status (agent_history removed - returns empty)"""
-    return {}
+    """agent_history에서 Feature Gate 현황 로드"""
+    try:
+        from agent_history.core.db_manager import AgentHistoryDB
+        db = AgentHistoryDB(market_id)
+        try:
+            summary = db.get_feature_gate_summary()
+            active = db.get_active_features()
+            return {
+                "summary": summary,
+                "active_features": active[:10],
+            }
+        finally:
+            db.close()
+    except Exception:
+        return {}
 
 
 def _load_agent_history_rag(market_id: str, regime: str = "") -> str:
-    """Load agent_history RAG context (agent_history removed - returns empty)"""
-    return ""
+    """agent_history RAG 컨텍스트 로드"""
+    try:
+        from agent_history.core.rag_provider import get_history_context
+        return get_history_context(market_id, current_regime=regime or None)
+    except Exception:
+        return ""
 
 
 def _load_inference_watchlist(market_id: str) -> List[Dict[str, Any]]:
-    """Load event propagation inference watchlist"""
+    """이벤트 전파 추론 Watchlist 로드"""
     market_map = {"crypto": "coin_market", "kr_stock": "kr_market", "us_stock": "us_market"}
     search_markets = ["news"]
     mapped = market_map.get(market_id)
@@ -807,12 +852,12 @@ def _load_inference_watchlist(market_id: str) -> List[Dict[str, Any]]:
             """)
             items.extend(rows)
         finally:
-            conn.close()
+            pass  # conn은 캐시에서 재사용 (close 불필요)
     return items[:5]
 
 
 def _load_regime_flow_summary(market_id: str) -> str:
-    """Load regime flow analysis results as LLM summary text"""
+    """레짐 흐름 분석 결과를 LLM 요약 텍스트로 로드"""
     market_map = {"crypto": "coin_market", "kr_stock": "kr_market", "us_stock": "us_market",
                   "commodity": "commodities", "forex": "forex", "bond": "bonds", "vix": "vix"}
     mapped = market_map.get(market_id, market_id)
@@ -823,7 +868,7 @@ def _load_regime_flow_summary(market_id: str) -> str:
 
     parts = []
     try:
-        # Market-wide regime flow
+        # 시장 전체 레짐 흐름
         if _table_exists(conn, "market_regime_flow"):
             mf = _fetch_rows(conn, """
                 SELECT dominant_regime, avg_regime_stage, avg_volume_ratio,
@@ -836,14 +881,14 @@ def _load_regime_flow_summary(market_id: str) -> str:
             if mf:
                 m = mf[0]
                 parts.append(
-                    f"[Market Regime Flow] regime={m.get('dominant_regime','?')} "
+                    f"[시장 레짐 흐름] 레짐={m.get('dominant_regime','?')} "
                     f"(stage={m.get('avg_regime_stage','?'):.1f}), "
                     f"volume_ratio={m.get('avg_volume_ratio',1):.2f}, "
                     f"bullish={m.get('bullish_pct',0):.0%}/bearish={m.get('bearish_pct',0):.0%}/neutral={m.get('neutral_pct',0):.0%}, "
-                    f"volume_trend={m.get('volume_trend','?')}, regime_trend={m.get('regime_trend','?')}"
+                    f"거래량추세={m.get('volume_trend','?')}, 레짐추세={m.get('regime_trend','?')}"
                 )
 
-        # Sector-level regime flow (top entries)
+        # 섹터별 레짐 흐름 (상위 5개)
         if _table_exists(conn, "sector_regime_flow"):
             sf = _fetch_rows(conn, """
                 SELECT sector, dominant_regime, avg_volume_ratio,
@@ -854,16 +899,16 @@ def _load_regime_flow_summary(market_id: str) -> str:
                 LIMIT 8
             """, (mapped,))
             if sf:
-                sect_lines = ["[Sector Regime]"]
+                sect_lines = ["[섹터별 레짐]"]
                 for s in sf:
                     sect_lines.append(
-                        f"  {s.get('sector','?')}({s.get('symbol_count',0)} symbols): "
+                        f"  {s.get('sector','?')}({s.get('symbol_count',0)}종목): "
                         f"{s.get('dominant_regime','?')}, vol={s.get('avg_volume_ratio',1):.2f}"
-                        f"({s.get('volume_trend','?')}), trend={s.get('regime_trend','?')}"
+                        f"({s.get('volume_trend','?')}), 추세={s.get('regime_trend','?')}"
                     )
                 parts.append("\n".join(sect_lines))
 
-        # Regime transition prediction (top 3)
+        # 레짐 전이 예측 (상위 3개)
         if _table_exists(conn, "regime_transitions"):
             current_regime = ""
             if _table_exists(conn, "market_regime_flow"):
@@ -886,15 +931,15 @@ def _load_regime_flow_summary(market_id: str) -> str:
                 ).fetchall()
                 if trans:
                     total = sum(t[2] for t in trans)
-                    pred_lines = [f"[Regime Transition Prediction] current={current_regime}"]
+                    pred_lines = [f"[레짐 전환 예측] 현재={current_regime}"]
                     for t in trans[:3]:
                         prob = t[2] / total if total > 0 else 0
                         pred_lines.append(
-                            f"  -> {t[0]} (probability={prob:.0%}, volume_condition={t[1]}, samples={t[2]})"
+                            f"  → {t[0]} (확률={prob:.0%}, 거래량조건={t[1]}, 샘플={t[2]})"
                         )
                     parts.append("\n".join(pred_lines))
 
-        # Cross-market signals
+        # 크로스마켓 시그널
         news_db = _safe_connect(get_external_db_path("news"))
         if news_db:
             try:
@@ -910,11 +955,11 @@ def _load_regime_flow_summary(market_id: str) -> str:
                         (mapped,),
                     ).fetchall()
                     if cross:
-                        cross_lines = ["[Cross-Market Regime Correlation]"]
+                        cross_lines = ["[크로스마켓 레짐 상관]"]
                         for c in cross:
                             cross_lines.append(
-                                f"  {c[0]}({c[1]}) -> this market impact: "
-                                f"avg {c[2]:.0f}h lag, correlation={c[3]:.2f}, observations={c[4]}"
+                                f"  {c[0]}({c[1]}) → 본 시장 영향: "
+                                f"평균 {c[2]:.0f}시간 후, 상관={c[3]:.2f}, 관측={c[4]}회"
                             )
                         parts.append("\n".join(cross_lines))
             finally:
@@ -923,13 +968,13 @@ def _load_regime_flow_summary(market_id: str) -> str:
     except Exception:
         pass
     finally:
-        conn.close()
+        pass  # conn은 캐시에서 재사용 (close 불필요)
 
     return "\n".join(parts)
 
 
 def _build_full_unified_context(market_id: str) -> Dict[str, Any]:
-    """Full unified context for a specific market (Level 1+2+3 + Feature Gate + Inference)"""
+    """특정 시장의 전체 통합 컨텍스트 (Level 1+2+3 + Feature Gate + Agent History + Inference)"""
     market_ctx = _build_unified_market_context(market_id)
     cross_market = _build_cross_market_context()
 
@@ -952,7 +997,7 @@ def _build_full_unified_context(market_id: str) -> Dict[str, Any]:
         full_summary_parts.append(regime_flow)
 
     if inference_watchlist:
-        wl_lines = ["[Event Propagation Inference Watchlist]"]
+        wl_lines = ["[이벤트 전파 추론 Watchlist]"]
         for item in inference_watchlist:
             sym = item.get("candidate_symbol", "?")
             src = (item.get("source_title") or "")[:50]
@@ -963,10 +1008,15 @@ def _build_full_unified_context(market_id: str) -> Dict[str, Any]:
             conf_val = float(conf) if conf else 0.0
             penalty_val = float(penalty) if penalty else 0.0
             wl_lines.append(
-                f"  {sym} ({rel}): '{src}' "
-                f"[confidence={conf_val:.2f}, penalty={penalty_val:.2f}] {detail}"
+                f"  🔍 {sym} ({rel}): '{src}' "
+                f"[신뢰도={conf_val:.2f}, penalty={penalty_val:.2f}] {detail}"
             )
         full_summary_parts.append("\n".join(wl_lines))
+
+    # LLM summary 크기 제한 (메모리 보호)
+    llm_summary = "\n\n---\n\n".join(full_summary_parts)
+    if len(llm_summary) > 8000:
+        llm_summary = llm_summary[:8000] + "\n...(truncated for memory efficiency)"
 
     data = {
         "market_id": market_id,
@@ -979,8 +1029,22 @@ def _build_full_unified_context(market_id: str) -> Dict[str, Any]:
         "alert_level": market_ctx.get("alert_level", "normal"),
         "active_cross_patterns": cross_market.get("active_count", 0),
         "dominant_interpretation": cross_market.get("dominant_interpretation"),
-        "_llm_summary": "\n\n---\n\n".join(full_summary_parts),
+        "_llm_summary": llm_summary,
     }
+    data["component_ttls"] = {
+        "internal_status": {"source": f"market://{market_id}/status", "ttl_seconds": 60},
+        "external_summary": {"source": f"market://{market_id}/external/summary", "ttl_seconds": 60},
+        "global_regime": {"source": "market://global/summary", "ttl_seconds": 300},
+        "cross_market": {"source": "market://unified/cross-market", "ttl_seconds": 120},
+        "signals": {"source": f"market://{market_id}/signals/summary", "ttl_seconds": 300},
+    }
+    data["_usage_guidance"] = (
+        "이 통합 컨텍스트는 여러 소스를 한번에 반환하지만 각 컴포넌트 갱신 주기가 다릅니다. "
+        "정밀 분석이 필요하면 개별 Resource를 직접 호출하세요: "
+        f"market://{market_id}/status (TTL=60초), "
+        f"market://{market_id}/external/summary (TTL=60초), "
+        "market://global/summary (TTL=300초)"
+    )
     explanation = build_resource_explanation(
         market=market_id,
         entity_type="market",
@@ -1007,50 +1071,47 @@ def _build_full_unified_context(market_id: str) -> Dict[str, Any]:
     )
 
 
-# --- Resource registration ---
+# ─── Resource 등록 ────────────────────────────────────────────────────────
+
+def _ai_summary_unified(data: dict) -> str:
+    l12 = data.get("level_1_2", {})
+    internal = l12.get("market_internal_summary", {})
+    regime = internal.get("market_regime", "unknown")
+    pos_count = internal.get("active_positions", 0)
+    avg_pnl = internal.get("avg_pnl", 0)
+    alert = data.get("alert_level", "normal")
+    patterns = data.get("active_cross_patterns", 0)
+    interp = data.get("dominant_interpretation", "")
+    market_id = data.get("market_id", "")
+    return f"{market_id} 통합: 레짐={regime}, 포지션 {pos_count}개(avg {avg_pnl:.1f}%), 알림={alert}, 교차패턴 {patterns}개. {interp}"
+
 
 def register_unified_context_resources(mcp, cache):
-    """Register unified context resources"""
+    """통합 컨텍스트 Resource 등록"""
 
     @mcp.resource("market://{market_id}/unified")
-    def get_unified_context(market_id: str) -> Dict[str, Any]:
-        """
-        Market-level unified context (internal + external + cross-market combined)
-
-        Merges internal technical analysis + external news/events/macro +
-        cross-market correlations into a single response. Allows LLM agents
-        to receive all levels of context in a single call.
-
-        Args:
-            market_id: Market ID (crypto, kr_stock, us_stock, commodity, forex, bond)
-
-        Returns:
-            Unified context (level_1_2: symbol+market, level_3: cross-market, _llm_summary)
-        """
+    async def get_unified_context(market_id: str) -> Dict[str, Any]:
+        """[역할] 시장 단위 통합 컨텍스트(내부 기술분석 + 외부 뉴스/이벤트 + 교차시장). [호출 시점] 하나의 호출로 시장 전체 맥락 파악 시. 개별 Resource 3-4개 대체. [선행 조건] 없음. 정밀 분석 필요 시 개별 resource 직접 호출이 캐시 효율적. [후속 추천] market://{market_id}/unified/symbol/{symbol}, get_signals. [주의] TTL=120초. 내부 여러 DB 조회로 응답 느릴 수 있음. component_ttls 참고.
+        [출력 스키마] ai_summary 래핑. full_data: market_id(str), internal{regime,positions_count,avg_pnl}, external{recent_news[],high_impact_news_count,upcoming_events[]}, alert_level(str:normal|elevated|high), feature_gate{...}, _contract{...}, _llm_summary(str)."""
         cache_key = f"unified_context_{market_id}"
         cached = cache.get(cache_key, ttl=CACHE_TTL_UNIFIED)
         if cached:
             return to_resource_text(cached)
-        data = _build_full_unified_context(market_id)
+        data = await asyncio.to_thread(_build_full_unified_context, market_id)
+        if not data.get("error"):
+            data = wrap_with_ai_summary(data, "unified_context", _ai_summary_unified)
         cache.set(cache_key, data)
         return to_resource_text(data)
 
     @mcp.resource("market://unified/cross-market")
-    def get_cross_market_correlations() -> Dict[str, Any]:
-        """
-        Cross-market correlation analysis (Level 3)
-
-        Detects inter-market correlation patterns such as
-        Gold vs BTC, Bond yields vs Stocks, Dollar vs Emerging markets, etc.
-
-        Returns:
-            Cross-market correlations (directions, active_patterns, dominant_interpretation)
-        """
+    async def get_cross_market_correlations() -> Dict[str, Any]:
+        """[역할] 교차시장 상관관계(금-BTC, 국채-주식, 달러-신흥시장 등 패턴 감지). [호출 시점] 시장간 상관관계/디커플링 분석 시. [선행 조건] market://global/summary 권장. [후속 추천] market://derived/cross-decoupling, market://all/summary. [주의] TTL=120초. 사전 정의된 패턴 기반.
+        [출력 스키마] _contract 포함. directions{symbol→{direction,regime,category}}, correlations[{pattern_name,interpretation,score,active}], active_count(int), dominant_interpretation(str|null), global_regime{overall_regime,overall_score}, market_structure{market_id→{overall_regime,groups{...}}}, _llm_summary(str)."""
         cache_key = "cross_market_correlations"
         cached = cache.get(cache_key, ttl=CACHE_TTL_UNIFIED)
         if cached:
             return to_resource_text(cached)
-        raw = _build_cross_market_context()
+        raw = await asyncio.to_thread(_build_cross_market_context)
         explanation = build_resource_explanation(
             market="global",
             entity_type="market",
@@ -1077,25 +1138,14 @@ def register_unified_context_resources(mcp, cache):
         return to_resource_text(data)
 
     @mcp.resource("market://{market_id}/unified/symbol/{symbol}")
-    def get_unified_symbol_context(market_id: str, symbol: str) -> Dict[str, Any]:
-        """
-        Symbol-level unified context (Level 1)
-
-        Merges a specific symbol's technical analysis (internal) with
-        news/events (external).
-
-        Args:
-            market_id: Market ID
-            symbol: Symbol code
-
-        Returns:
-            Symbol unified context (internal, external, correlation_type)
-        """
+    async def get_unified_symbol_context(market_id: str, symbol: str) -> Dict[str, Any]:
+        """[역할] 종목 단위 통합 컨텍스트(기술분석 + 외부 뉴스/이벤트). [호출 시점] 특정 종목의 내부+외부 맥락을 한번에 파악 시. [선행 조건] market://{market_id}/unified 후 drill-down 권장. [후속 추천] get_role_analysis, get_position_detail. [주의] 종목별 외부 데이터 없을 수 있음.
+        [출력 스키마] _contract 포함. symbol(str), internal{signal_score,confidence,action,rsi,macd}, external{news[],events[],fundamentals{}}, volatility_spike(bool), external_trigger(bool), correlation_type(str:none|internal_trigger|external_trigger|both_active), _llm_summary(str)."""
         cache_key = f"unified_symbol_{market_id}_{symbol}"
         cached = cache.get(cache_key, ttl=CACHE_TTL_UNIFIED)
         if cached:
             return to_resource_text(cached)
-        raw = _merge_symbol_context(market_id, symbol)
+        raw = await asyncio.to_thread(_merge_symbol_context, market_id, symbol)
         explanation = build_resource_explanation(
             market=market_id,
             symbol=symbol,
@@ -1124,4 +1174,4 @@ def register_unified_context_resources(mcp, cache):
         cache.set(cache_key, data)
         return to_resource_text(data)
 
-    logger.info("  Unified Context resources registered (Level 1/2/3)")
+    logger.info("  🔗 Unified Context resources registered (Level 1/2/3)")

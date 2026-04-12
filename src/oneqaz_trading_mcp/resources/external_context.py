@@ -2,21 +2,26 @@
 """
 External Context Resources
 ==========================
-Resource for querying external_context DB (per-market external data).
+external_context DB(시장별 외부 데이터) 조회 Resource.
 """
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
-from oneqaz_trading_mcp.config import CACHE_TTL_MARKET_STATUS, get_external_db_path
-from oneqaz_trading_mcp.response import (
+from mcps.config import CACHE_TTL_MARKET_STATUS, get_external_db_path
+from mcps.resources.resource_response import (
     build_resource_explanation,
     to_resource_text,
     with_explanation_contract,
+    mcp_error,
+    MCPErrorCode,
+    MCPErrorAction,
+    wrap_with_ai_summary,
 )
 
 logger = logging.getLogger("MarketMCP")
@@ -46,14 +51,16 @@ def _latest_updated_at(conn: sqlite3.Connection) -> str | None:
 
 
 def _load_external_summary(market_id: str) -> Dict[str, Any]:
-    """Load external context summary for the given market."""
     db_path = get_external_db_path(market_id)
     if not db_path or not db_path.exists():
-        return {
-            "error": f"external_context DB not found for market: {market_id}",
-            "market_id": market_id,
-            "db_path": str(db_path) if db_path else None,
-        }
+        return mcp_error(
+            MCPErrorCode.DB_NOT_FOUND,
+            f"external_context DB not found for market: {market_id}",
+            action=MCPErrorAction.CHECK,
+            action_value=f"market://{market_id}/status",
+            market_id=market_id,
+            db_path=str(db_path) if db_path else None,
+        )
 
     try:
         with sqlite3.connect(str(db_path), timeout=20) as conn:
@@ -62,8 +69,9 @@ def _load_external_summary(market_id: str) -> Dict[str, Any]:
                 """
                 SELECT symbol, name_ko, name_en, sector, industry, is_active, updated_at
                 FROM symbol_master
-                ORDER BY is_active DESC, symbol ASC
-                LIMIT 300
+                WHERE is_active = 1
+                ORDER BY symbol ASC
+                LIMIT 100
                 """,
             ) if _table_exists(conn, "symbol_master") else []
 
@@ -74,20 +82,20 @@ def _load_external_summary(market_id: str) -> Dict[str, Any]:
                        sector, industry, updated_at
                 FROM fundamentals
                 ORDER BY COALESCE(market_cap, 0) DESC, symbol ASC
-                LIMIT 200
+                LIMIT 50
                 """,
             ) if _table_exists(conn, "fundamentals") else []
 
             news_events = _fetch_all(
                 conn,
                 """
-                SELECT id, symbol, title, summary, sentiment_score,
+                SELECT id, symbol, title, sentiment_score,
                        sentiment_label, sentiment_confidence, sentiment_model, risk_flags,
-                       impact_level, status, source, url, published_at, created_at,
+                       impact_level, status, source, published_at,
                        sector, event_type, lifecycle_stage
                 FROM news_events
                 ORDER BY COALESCE(published_at, created_at) DESC
-                LIMIT 50
+                LIMIT 30
                 """,
             ) if _table_exists(conn, "news_events") else []
 
@@ -96,11 +104,11 @@ def _load_external_summary(market_id: str) -> Dict[str, Any]:
                 conn,
                 """
                 SELECT id, symbol, event_type, title, status, confidence, expected_impact,
-                       scheduled_at, source, details, created_at
+                       scheduled_at, source, created_at
                 FROM scheduled_events
                 WHERE status = 'upcoming' OR scheduled_at >= ?
                 ORDER BY scheduled_at ASC
-                LIMIT 30
+                LIMIT 20
                 """,
                 (now_iso,),
             ) if _table_exists(conn, "scheduled_events") else []
@@ -108,10 +116,10 @@ def _load_external_summary(market_id: str) -> Dict[str, Any]:
             market_metrics = _fetch_all(
                 conn,
                 """
-                SELECT symbol, metric_type, value, timestamp, details
+                SELECT symbol, metric_type, value, timestamp
                 FROM market_metrics
                 ORDER BY timestamp DESC
-                LIMIT 100
+                LIMIT 50
                 """,
             ) if _table_exists(conn, "market_metrics") else []
 
@@ -119,10 +127,10 @@ def _load_external_summary(market_id: str) -> Dict[str, Any]:
                 conn,
                 """
                 SELECT news_id, market_id, window_minutes, reaction_score, confidence,
-                       lag_minutes, sample_size, direction, news_published_at, computed_at, details
+                       lag_minutes, sample_size, direction, news_published_at, computed_at
                 FROM news_reaction_history
                 ORDER BY computed_at DESC
-                LIMIT 120
+                LIMIT 30
                 """,
             ) if _table_exists(conn, "news_reaction_history") else []
 
@@ -179,17 +187,27 @@ def _load_external_summary(market_id: str) -> Dict[str, Any]:
             )
     except Exception as e:
         logger.error("Failed to load external summary for %s: %s", market_id, e)
-        return {"error": str(e), "market_id": market_id}
+        return mcp_error(
+            MCPErrorCode.DB_NOT_FOUND,
+            str(e),
+            action=MCPErrorAction.RETRY,
+            action_value="30",
+            market_id=market_id,
+        )
 
 
 def _load_external_symbol(market_id: str, symbol: str) -> Dict[str, Any]:
-    """Load external context for a specific symbol within a market."""
     base = _load_external_summary(market_id)
     if base.get("error"):
         return base
     sym = (symbol or "").strip().upper()
     if not sym:
-        return {"error": "symbol is required", "market_id": market_id}
+        return mcp_error(
+            MCPErrorCode.SYMBOL_NOT_FOUND,
+            "symbol is required",
+            action=MCPErrorAction.CHECK,
+            market_id=market_id,
+        )
 
     def _match(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         out = []
@@ -236,7 +254,6 @@ def _load_external_symbol(market_id: str, symbol: str) -> Dict[str, Any]:
 
 
 def _to_llm_summary(data: Dict[str, Any]) -> str:
-    """Convert external context summary to LLM-friendly text."""
     counts = data.get("counts", {})
     sectors = data.get("sectors", {})
     top_sectors = ", ".join([f"{k}:{v}" for k, v in list(sectors.items())[:5]]) if sectors else "N/A"
@@ -255,7 +272,7 @@ def _to_llm_summary(data: Dict[str, Any]) -> str:
     news = data.get("news_events") or []
     top_news = [n for n in news if n.get("title")][:5]
     if top_news:
-        lines.append("- Recent news:")
+        lines.append("- 최근 뉴스:")
         for n in top_news:
             title = (n.get("title") or "")[:80]
             score = n.get("sentiment_score")
@@ -276,7 +293,7 @@ def _to_llm_summary(data: Dict[str, Any]) -> str:
     events = data.get("scheduled_events") or []
     upcoming = [e for e in events if e.get("title") and e.get("status") == "upcoming"][:3]
     if upcoming:
-        lines.append("- Upcoming events:")
+        lines.append("- 예정 이벤트:")
         for e in upcoming:
             title = (e.get("title") or "")[:60]
             scheduled = e.get("scheduled_at", "")
@@ -287,7 +304,6 @@ def _to_llm_summary(data: Dict[str, Any]) -> str:
 
 
 def _to_llm_symbol_summary(data: Dict[str, Any]) -> str:
-    """Convert symbol-level external context to LLM-friendly text."""
     f_count = len(data.get("fundamentals", []))
     n_count = len(data.get("news_events", []))
     e_count = len(data.get("scheduled_events", []))
@@ -305,18 +321,28 @@ def _to_llm_symbol_summary(data: Dict[str, Any]) -> str:
 
 
 def _load_causality_summary(market_id: str) -> Dict[str, Any]:
-    """Load news-market causality analysis results."""
-    # Query causality analysis results for the market from the news DB
+    """뉴스-시장 인과관계 분석 결과를 로드한다."""
+    # news DB에서 해당 마켓의 causality 분석 결과 조회
     news_db_path = get_external_db_path("news")
     if not news_db_path or not news_db_path.exists():
-        return {"error": "news DB not found", "market_id": market_id}
+        return mcp_error(
+            MCPErrorCode.DB_NOT_FOUND,
+            "news DB not found",
+            action=MCPErrorAction.CHECK,
+            market_id=market_id,
+        )
 
     try:
         with sqlite3.connect(str(news_db_path), timeout=10) as conn:
             if not _table_exists(conn, "news_causality_analysis"):
-                return {"market_id": market_id, "causality": [], "type_distribution": {}, "message": "no data yet"}
+                return mcp_error(
+                    MCPErrorCode.NO_DATA,
+                    "news_causality_analysis 테이블 없음 — 데이터 축적 필요",
+                    action=MCPErrorAction.CHECK,
+                    market_id=market_id,
+                )
 
-            # Recent analysis results
+            # 최근 분석 결과
             causality_rows = _fetch_all(
                 conn,
                 """
@@ -340,7 +366,7 @@ def _load_causality_summary(market_id: str) -> Dict[str, Any]:
                 (market_id,),
             )
 
-            # Type distribution
+            # 타입 분포
             type_dist = _fetch_all(
                 conn,
                 """
@@ -376,7 +402,7 @@ def _load_causality_summary(market_id: str) -> Dict[str, Any]:
             entity_type="market",
             explanation_type="mcp_causality_summary",
             as_of_time=causality_rows[0]["computed_at"] if causality_rows else datetime.now(timezone.utc).isoformat(),
-            headline=f"{market_id} news-market causality analysis",
+            headline=f"{market_id} 뉴스-시장 인과관계 분석",
             why_text=result["_llm_summary"],
             bullet_points=[
                 f"total={len(causality_rows)}",
@@ -392,53 +418,67 @@ def _load_causality_summary(market_id: str) -> Dict[str, Any]:
         )
     except Exception as e:
         logger.error("Failed to load causality summary for %s: %s", market_id, e)
-        return {"error": str(e), "market_id": market_id}
+        return mcp_error(
+            MCPErrorCode.DB_NOT_FOUND,
+            str(e),
+            action=MCPErrorAction.RETRY,
+            action_value="30",
+            market_id=market_id,
+        )
 
 
 def _to_causality_llm_summary(data: Dict[str, Any]) -> str:
-    """Convert causality analysis results to LLM-friendly text."""
+    """인과관계 분석 결과를 LLM 친화적 텍스트로 변환."""
     market_id = data.get("market_id", "?")
     type_dist = data.get("type_distribution", {})
     causality = data.get("causality", [])
 
-    lines = [f"[{market_id} News-market causality]"]
+    lines = [f"[{market_id} 뉴스-시장 인과관계]"]
 
-    # Type distribution
+    # 타입 분포
     if type_dist:
-        lines.append("- News type distribution:")
+        lines.append("- 뉴스 타입 분포:")
         for nt, info in type_dist.items():
             cnt = info.get("count", 0)
             ratio = info.get("avg_anticipation_ratio", 0)
-            label = {"anticipated": "anticipated", "surprise": "surprise", "surprise_with_precursor": "surprise_with_precursor"}.get(nt, nt)
-            lines.append(f"  * {label}: {cnt} items (anticipation_ratio={ratio:.2f})")
+            label = {"anticipated": "예견", "surprise": "서프라이즈", "surprise_with_precursor": "전조있는 서프라이즈"}.get(nt, nt)
+            lines.append(f"  * {label}: {cnt}건 (선행비율={ratio:.2f})")
 
-    # Recent analyses (top 5)
+    # 최근 분석 (상위 5건)
     recent = [c for c in causality if c.get("news_title")][:5]
     if recent:
-        lines.append("- Recent analyses:")
+        lines.append("- 최근 분석:")
         for c in recent:
             title = (c.get("news_title") or "")[:60]
             nt = c.get("news_type", "?")
             conf = c.get("confidence", 0)
             pre_score = c.get("precursor_score", 0)
-            tag = f" [precursor={pre_score:.1f}]" if nt == "surprise_with_precursor" else ""
-            lines.append(f"  * [{nt}] {title} (confidence={conf:.2f}){tag}")
+            tag = f" [전조={pre_score:.1f}]" if nt == "surprise_with_precursor" else ""
+            lines.append(f"  * [{nt}] {title} (신뢰={conf:.2f}){tag}")
 
     return "\n".join(lines)
 
 
 def _load_macro_events() -> Dict[str, Any]:
-    """Load active macro event lifecycle list."""
+    """활성 매크로 이벤트 라이프사이클 목록 로드."""
     news_db_path = get_external_db_path("news")
     if not news_db_path or not news_db_path.exists():
-        return {"error": "news DB not found", "events": []}
+        return mcp_error(
+            MCPErrorCode.DB_NOT_FOUND,
+            "news DB not found",
+            action=MCPErrorAction.CHECK,
+        )
 
     try:
         with sqlite3.connect(str(news_db_path), timeout=10) as conn:
             if not _table_exists(conn, "macro_event_narratives"):
-                return {"events": [], "message": "macro_event_narratives table not found"}
+                return mcp_error(
+                    MCPErrorCode.NO_DATA,
+                    "macro_event_narratives 테이블 없음 — 이벤트 데이터 축적 필요",
+                    action=MCPErrorAction.CHECK,
+                )
 
-            # Active events (excluding RESOLVED)
+            # 활성 이벤트 (RESOLVED 제외)
             events = _fetch_all(
                 conn,
                 """
@@ -460,7 +500,7 @@ def _load_macro_events() -> Dict[str, Any]:
                 """,
             )
 
-            # Recent developments for each event
+            # 각 이벤트의 최근 전개
             for evt in events:
                 event_id = evt.get("event_id", "")
                 developments = _fetch_all(
@@ -478,7 +518,7 @@ def _load_macro_events() -> Dict[str, Any]:
                 )
                 evt["recent_developments"] = developments
 
-                # Latest sensitivity per market
+                # 시장별 최신 민감도
                 market_impact = _fetch_all(
                     conn,
                     """
@@ -490,7 +530,7 @@ def _load_macro_events() -> Dict[str, Any]:
                     """,
                     (event_id,),
                 )
-                # Keep only the latest per market
+                # 시장별 최신만
                 seen = {}
                 for mi in market_impact:
                     mid = mi.get("market_id", "")
@@ -510,7 +550,7 @@ def _load_macro_events() -> Dict[str, Any]:
                 entity_type="system",
                 explanation_type="mcp_macro_events",
                 as_of_time=datetime.now(timezone.utc).isoformat(),
-                headline="Macro event lifecycle status",
+                headline="매크로 이벤트 라이프사이클 현황",
                 why_text=result["_llm_summary"],
                 bullet_points=[
                     f"active={active_count}",
@@ -526,44 +566,49 @@ def _load_macro_events() -> Dict[str, Any]:
             )
     except Exception as e:
         logger.error("Failed to load macro events: %s", e)
-        return {"error": str(e)}
+        return mcp_error(
+            MCPErrorCode.DB_NOT_FOUND,
+            str(e),
+            action=MCPErrorAction.RETRY,
+            action_value="30",
+        )
 
 
 def _to_macro_events_llm_summary(data: Dict[str, Any]) -> str:
-    """Convert macro events to LLM-friendly text."""
+    """매크로 이벤트를 LLM 친화적 텍스트로 변환."""
     events = data.get("events", [])
     if not events:
-        return "[Macro events] No active events"
+        return "[매크로 이벤트] 활성 이벤트 없음"
 
-    lines = [f"[Macro events status] active={data.get('active_events', 0)}"]
+    lines = [f"[매크로 이벤트 현황] 활성={data.get('active_events', 0)}개"]
 
-    # State label mapping
-    state_label_map = {
-        "EMERGING": "Detected",
-        "ESCALATING": "Escalating",
-        "PEAK_IMPACT": "Peak Impact",
-        "ADAPTING": "Adapting",
-        "DORMANT": "Dormant",
-        "RE_ESCALATION": "Re-escalation",
-        "RESOLVING": "Resolving",
-        "RESOLVED": "Resolved",
+    # 상태 한국어 매핑
+    state_ko = {
+        "EMERGING": "감지됨",
+        "ESCALATING": "확대중",
+        "PEAK_IMPACT": "최고영향",
+        "ADAPTING": "시장적응중",
+        "DORMANT": "소강상태",
+        "RE_ESCALATION": "재충격",
+        "RESOLVING": "해결중",
+        "RESOLVED": "해결됨",
     }
 
     for evt in events[:5]:
         title = (evt.get("title") or "")[:50]
         state = evt.get("lifecycle_state", "?")
-        state_label = state_label_map.get(state, state)
+        state_label = state_ko.get(state, state)
         sensitivity = evt.get("current_sensitivity", 0)
         esc_count = evt.get("escalation_count", 0)
         category = evt.get("category", "")
 
-        line = f"- [{state_label}] {title} (sensitivity={sensitivity:.2f}, category={category}"
+        line = f"- [{state_label}] {title} (민감도={sensitivity:.2f}, 카테고리={category}"
         if esc_count > 0:
-            line += f", re-escalations={esc_count}"
+            line += f", 재충격={esc_count}회"
         line += ")"
         lines.append(line)
 
-        # Per-market sensitivity
+        # 시장별 민감도
         ms = evt.get("market_sensitivities", {})
         if ms:
             parts = []
@@ -571,54 +616,74 @@ def _to_macro_events_llm_summary(data: Dict[str, Any]) -> str:
                 s = info.get("sensitivity", 0)
                 short = mid.replace("_market", "")
                 parts.append(f"{short}={s:.2f}")
-            lines.append(f"  By market: {', '.join(parts)}")
+            lines.append(f"  시장별: {', '.join(parts)}")
 
     return "\n".join(lines)
 
 
+def _ai_summary_external(data: dict) -> str:
+    counts = data.get("counts", {})
+    news = counts.get("news_events", 0)
+    fund = counts.get("fundamentals", 0)
+    events = counts.get("scheduled_events", 0)
+    market_id = data.get("market_id", "")
+    news_list = data.get("news_events", [])
+    headline = ""
+    if news_list:
+        high_impact = [n for n in news_list if n.get("impact_level") == "high"]
+        if high_impact:
+            headline = f" 고영향: {high_impact[0].get('title', '')[:30]}."
+    return f"{market_id} 외부: 뉴스 {news}건, 펀더멘탈 {fund}건, 예정이벤트 {events}건.{headline}"
+
+
 def register_external_context_resources(mcp, cache):
-    """Register external_context resources."""
+    """external_context Resource 등록."""
 
     @mcp.resource("market://{market_id}/external/summary")
-    def get_external_summary(market_id: str) -> Dict[str, Any]:
+    async def get_external_summary(market_id: str) -> Dict[str, Any]:
+        """[역할] 시장별 외부 컨텍스트(뉴스, 펀더멘탈, 예정이벤트, 메트릭) 요약. [호출 시점] 기술적 분석 외 뉴스/이벤트 영향 파악 시. [선행 조건] 없음. [후속 추천] market://{market_id}/external/symbol/{symbol}, market://{market_id}/external/causality. [주의] TTL=60초. [출력 스키마] ai_summary 래핑. full_data: market_id(str), counts{symbol_master,fundamentals,news_events,scheduled_events,market_metrics,news_reaction_history}, sectors{sector→count}, news_events[{title,sentiment_score,sentiment_label,impact_level,source}], scheduled_events[{event_type,title,status,scheduled_at}], _contract{...}, _llm_summary(str)."""
         cache_key = f"external_summary_{market_id}"
         cached = cache.get(cache_key, ttl=CACHE_TTL_MARKET_STATUS)
         if cached:
             return to_resource_text(cached)
-        data = _load_external_summary(market_id)
+        data = await asyncio.to_thread(_load_external_summary, market_id)
+        if not data.get("error"):
+            data = wrap_with_ai_summary(data, "external_summary", _ai_summary_external)
         cache.set(cache_key, data)
         return to_resource_text(data)
 
     @mcp.resource("market://{market_id}/external/symbol/{symbol}")
-    def get_external_symbol(market_id: str, symbol: str) -> Dict[str, Any]:
+    async def get_external_symbol(market_id: str, symbol: str) -> Dict[str, Any]:
+        """[역할] 특정 종목의 펀더멘탈/뉴스/예정이벤트. [호출 시점] 특정 종목 외부 요인 분석 시. [선행 조건] external/summary 권장. [후속 추천] get_signal_detail과 교차 분석, market://{market_id}/unified/symbol/{symbol}. [주의] 종목별 데이터 없을 수 있음. [출력 스키마] _contract 포함. market_id(str), symbol(str), symbol_master[{name_ko,sector,industry}], fundamentals[{market_cap,per,pbr}], news_events[{title,sentiment_score,impact_level}], scheduled_events[{event_type,status}], _llm_summary(str)."""
         cache_key = f"external_symbol_{market_id}_{symbol}"
         cached = cache.get(cache_key, ttl=CACHE_TTL_MARKET_STATUS)
         if cached:
             return to_resource_text(cached)
-        data = _load_external_symbol(market_id, symbol)
+        data = await asyncio.to_thread(_load_external_symbol, market_id, symbol)
         cache.set(cache_key, data)
         return to_resource_text(data)
 
     @mcp.resource("market://{market_id}/external/causality")
-    def get_causality_summary(market_id: str) -> Dict[str, Any]:
-        """News-market causality analysis results (3-type classification)."""
+    async def get_causality_summary(market_id: str) -> Dict[str, Any]:
+        """[역할] 뉴스-시장 인과관계 분석(예상/서프라이즈/전조서프라이즈 3분류). [호출 시점] 뉴스의 시장 인과관계 분석 시. [선행 조건] external/summary 후. [후속 추천] market://derived/event-leading, market://derived/reaction-speed. [주의] 데이터 축적 필요. [출력 스키마] _contract 포함. market_id(str), total_analyses(int), type_distribution{news_type→{count,avg_anticipation_ratio,avg_precursor_score}}, causality[{news_type,anticipation_ratio,lead_time_minutes,precursor_score,confidence,title,published_at}], _llm_summary(str)."""
         cache_key = f"causality_summary_{market_id}"
         cached = cache.get(cache_key, ttl=CACHE_TTL_MARKET_STATUS)
         if cached:
             return to_resource_text(cached)
-        data = _load_causality_summary(market_id)
+        data = await asyncio.to_thread(_load_causality_summary, market_id)
         cache.set(cache_key, data)
         return to_resource_text(data)
 
     @mcp.resource("market://global/macro_events")
-    def get_macro_events() -> Dict[str, Any]:
-        """Active macro event lifecycle status (wars, financial crises, and other long-running events)."""
+    async def get_macro_events() -> Dict[str, Any]:
+        """[역할] 활성 매크로 이벤트의 라이프사이클 상태(전쟁/금융위기 등 장기 이벤트). [호출 시점] 진행 중인 글로벌 매크로 이벤트 확인 시. [선행 조건] market://global/summary 권장. [후속 추천] market://unified/cross-market. [주의] 이벤트 없으면 빈 배열. [출력 스키마] _contract 포함. total_events(int), active_events(int), events[{event_id,title,category,lifecycle_state,current_sensitivity,peak_sensitivity,affected_markets,recent_developments[],market_sensitivities{}}], _llm_summary(str)."""
         cache_key = "macro_events_global"
         cached = cache.get(cache_key, ttl=CACHE_TTL_MARKET_STATUS)
         if cached:
             return to_resource_text(cached)
-        data = _load_macro_events()
+        data = await asyncio.to_thread(_load_macro_events)
         cache.set(cache_key, data)
         return to_resource_text(data)
 
-    logger.info("  External Context resources registered")
+    logger.info("  🌍 External Context resources registered")
+
