@@ -352,15 +352,22 @@ def _get_role_analysis(
         with sqlite3.connect(str(sym_db), timeout=5.0) as conn:
             conn.row_factory = sqlite3.Row
 
-            # Query latest signal per interval
-            rows = conn.execute("""
-                SELECT * FROM signals
-                WHERE timestamp = (
-                    SELECT MAX(timestamp) FROM signals s2
-                    WHERE s2.interval = signals.interval
-                )
-                ORDER BY interval
-            """).fetchall()
+            # Query latest signal per interval (per-interval LIMIT 1 — avoid O(N²) correlated subquery)
+            intervals = [
+                r['interval'] for r in conn.execute(
+                    "SELECT DISTINCT interval FROM signals"
+                ).fetchall()
+            ]
+            rows = []
+            for iv in intervals:
+                r = conn.execute(
+                    "SELECT * FROM signals WHERE interval = ? "
+                    "ORDER BY timestamp DESC LIMIT 1",
+                    (iv,),
+                ).fetchone()
+                if r is not None:
+                    rows.append(r)
+            rows.sort(key=lambda row: row['interval'])
 
             # Extract hierarchy_context from combined row
             hierarchy_ctx = {}
