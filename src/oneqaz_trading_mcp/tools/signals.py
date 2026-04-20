@@ -370,14 +370,21 @@ def _get_role_analysis(
             rows.sort(key=lambda row: row['interval'])
 
             # Extract hierarchy_context from combined row
+            # KR/US and some crypto signal DBs lack the hierarchy_context column —
+            # check column presence and fall back to NULL (graceful degrade).
+            try:
+                cols = {r[1] for r in conn.execute("PRAGMA table_info(signals)").fetchall()}
+            except Exception:
+                cols = set()
+            hierarchy_col = "hierarchy_context" if "hierarchy_context" in cols else "NULL AS hierarchy_context"
             hierarchy_ctx = {}
-            combined_row = conn.execute("""
-                SELECT hierarchy_context, signal_score, confidence, action,
-                       current_price, target_price, risk_level, volatility
-                FROM signals
-                WHERE interval = 'combined'
-                ORDER BY timestamp DESC LIMIT 1
-            """).fetchone()
+            combined_row = conn.execute(
+                f"SELECT {hierarchy_col}, signal_score, confidence, action, "
+                "       current_price, target_price, risk_level, volatility "
+                "FROM signals "
+                "WHERE interval = 'combined' "
+                "ORDER BY timestamp DESC LIMIT 1"
+            ).fetchone()
 
             if combined_row and combined_row['hierarchy_context']:
                 try:
