@@ -19,12 +19,12 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from mcps.config import (
+from oneqaz_trading_mcp.config import (
     MARKET_DB_PATHS,
     CACHE_TTL_MARKET_STATUS,
     get_market_db_path,
 )
-from mcps.resources.resource_response import (
+from oneqaz_trading_mcp.resources.resource_response import (
     build_resource_explanation,
     to_resource_text,
     with_explanation_contract,

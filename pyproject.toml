@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oneqaz-trading-mcp"
-version = "0.2.0"
+version = "0.3.0"
 description = "MCP server for trading signal analysis, position monitoring, market regime detection, and Trust Layer (B2AI credibility verification)"
 readme = "README.md"
 license = {text = "MIT"}
@@ -31,9 +31,9 @@ dependencies = [
 oneqaz-trading-mcp = "oneqaz_trading_mcp.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/oneqaz/oneqaz-trading-mcp"
-Repository = "https://github.com/oneqaz/oneqaz-trading-mcp"
-Issues = "https://github.com/oneqaz/oneqaz-trading-mcp/issues"
+Homepage = "https://github.com/oneqaz-trading/oneqaz-trading-mcp"
+Repository = "https://github.com/oneqaz-trading/oneqaz-trading-mcp"
+Issues = "https://github.com/oneqaz-trading/oneqaz-trading-mcp/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]

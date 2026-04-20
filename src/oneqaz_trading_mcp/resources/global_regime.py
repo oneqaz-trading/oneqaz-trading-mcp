@@ -19,13 +19,13 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 
-from mcps.config import (
+from oneqaz_trading_mcp.config import (
     GLOBAL_REGIME_SUMMARY_JSON,
     ANALYSIS_DB_PATHS,
     CACHE_TTL_GLOBAL_REGIME,
     get_analysis_db_path,
 )
-from mcps.resources.resource_response import (
+from oneqaz_trading_mcp.resources.resource_response import (
     to_resource_text,
     mcp_error,
     MCPErrorCode,

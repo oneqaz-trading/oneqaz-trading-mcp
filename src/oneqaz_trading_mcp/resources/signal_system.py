@@ -16,14 +16,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from mcps.config import (
+from oneqaz_trading_mcp.config import (
     CACHE_TTL_MARKET_STATUS,
     get_signals_dir,
     list_signal_db_files,
     get_symbol_from_signal_db,
     get_market_db_path,
 )
-from mcps.resources.resource_response import to_resource_text, mcp_error, MCPErrorCode, MCPErrorAction, wrap_with_ai_summary
+from oneqaz_trading_mcp.resources.resource_response import to_resource_text, mcp_error, MCPErrorCode, MCPErrorAction, wrap_with_ai_summary
 
 logger = logging.getLogger("MarketMCP")
 

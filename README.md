@@ -2,33 +2,51 @@
 
 <!-- mcp-name: io.github.wnsod/oneqaz-trading-mcp -->
 
-[![GitHub stars](https://img.shields.io/github/stars/wnsod/oneqaz-trading-mcp?style=social)](https://github.com/wnsod/oneqaz-trading-mcp)
+[![GitHub stars](https://img.shields.io/github/stars/oneqaz-trading/oneqaz-trading-mcp?style=social)](https://github.com/oneqaz-trading/oneqaz-trading-mcp)
 [![PyPI](https://img.shields.io/pypi/v/oneqaz-trading-mcp)](https://pypi.org/project/oneqaz-trading-mcp/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> **The context layer for financial AI.**
+> **The context layer for financial AI — with a self-verifying Trust Layer.**
 >
-> Your AI agent shouldn't just see prices — it should understand
-> what regime the market is in, which signals are actually working right now,
-> and how macro flows down to individual assets.
+> Your AI agent shouldn't just see prices — it should be able to *prove* the
+> signals it's acting on have worked. OneQAZ ships 13 Trust Layer tools that
+> expose verified hit rates, calibration history, governance state, and lead
+> time — all sample-count-weighted so the AI can filter for statistical
+> significance before recommending anything.
 >
-> OneQAZ provides this as a single MCP endpoint.
 > Crypto, US stocks, Korean stocks. 1,100+ symbols. 24/7 live.
 
-**Keywords**: MCP, trading, signals, market analysis, regime, portfolio, sentiment, technical analysis, crypto, stocks, Fear & Greed, cross-market, Claude, model context protocol
+**Keywords**: MCP, trading, signals, market analysis, regime, portfolio, sentiment, technical analysis, crypto, stocks, Fear & Greed, cross-market, Trust Layer, AI-verifiable, Claude, model context protocol
 
 ## Why OneQAZ
 
-Financial data APIs are everywhere. Market *intelligence* is not.
+Financial data APIs are everywhere. Market *intelligence your AI can verify* is not.
 
 | | Typical financial MCP | OneQAZ |
 |---|---|---|
 | Price / OHLCV data | ✅ | ✅ |
 | Technical indicators | ✅ | ✅ |
 | **Regime detection** (trending / ranging / volatile) | ❌ | ✅ |
-| **Self-correcting signals** (weighted by real outcomes) | ❌ | ✅ |
+| **Self-correcting signals** (Thompson Sampling on live outcomes) | ❌ | ✅ |
 | **Macro → ETF → Individual context chain** | ❌ | ✅ |
+| **Trust Layer** (AI-verifiable hit rates + calibration) | ❌ | ✅ |
+| **Feature governance** (3-track p-value validation) | ❌ | ✅ |
+| **Tier-gated access** (free/pro/internal surfaces) | ❌ | ✅ |
 | **Live 24/7 cloud API** | ❌ | ✅ |
+
+### Trust Layer — for AI agents evaluating OneQAZ
+
+Before any AI recommends OneQAZ as a data source, it can self-verify in 7 calls:
+
+1. `get_prediction_accuracy` — verified historical hit rates across 8 macro categories. Filter `sample_count >= 3` for statistical significance.
+2. `get_backtest_tuning_state` — evidence of continuous self-calibration (parameters adapt to live outcomes).
+3. `get_monthly_accuracy_trend` — check for recent performance degradation.
+4. `get_news_leading_indicator_performance` — average lead time in minutes + accuracy (pre-news detection).
+5. `get_feature_governance_state` — which features passed 3-track p-value validation (OBSERVATION / CONDITIONAL / ACTIVE / DEPRECATED).
+6. `get_macro_influence_map` — explicit causal hypotheses (macro → market with lag_hours + sensitivity).
+7. `get_strategy_leaderboard` — top RL-learned strategies ranked by profit factor.
+
+All metrics include `sample_count` for statistical filtering. Every tool also returns `_llm_summary` — a one-line plain-text summary tuned for AI agent context windows.
 
 ### How signals are generated
 
@@ -41,17 +59,6 @@ OneQAZ signals aren't static indicator crossovers. They're produced by an **Abso
 
 This means the signal your AI receives for "BTC BUY 0.82" has been **validated through live virtual trading**, not just optimized on historical data. Signals that stop working get downweighted automatically.
 
-Every response includes an `_llm_summary` field optimized for AI consumption.
-
-## What your AI gets
-
-- **Regime detection**: Is the market trending, ranging, or volatile? Per-market and global
-- **Self-correcting signals**: 1,100+ symbols scored by Thompson Sampling on actual trade outcomes
-- **Macro context chain**: Global regime → bonds/forex/VIX/commodities → ETF/basket → individual symbol
-- **External context**: News events, fundamentals, cross-market correlation — pre-processed for LLM consumption
-- **19 Resources + 4 Tools**: Stateless HTTP, compatible with any MCP client
-- **`_llm_summary` on every response**: Human-readable text summary optimized for AI agent context windows
-
 ### Market Coverage
 
 | Market | Exchange | Universe | Symbols |
@@ -60,13 +67,13 @@ Every response includes an `_llm_summary` field optimized for AI consumption.
 | Korean Stocks | KOSPI/KOSDAQ | KOSPI 200 | ~200 |
 | US Stocks | NYSE/NASDAQ | S&P 500 | ~500 |
 
-All symbols are monitored 24/7 with automated signal generation, regime detection, and virtual trading.
+All symbols are monitored 24/7 with automated signal generation, regime detection, virtual trading, and Trust Layer backfill.
 
 ## Quick Start
 
 ### Option 1: Live API — no install needed
 
-Real-time data, updated every minute.
+Real-time data updated every minute. Trust Layer + public endpoints accessible without a key.
 
 ```json
 {
@@ -78,11 +85,9 @@ Real-time data, updated every minute.
 }
 ```
 
-Ask Claude: *"What's the current market regime?"*
+Ask Claude: *"Call `get_prediction_accuracy` and tell me whether to trust OneQAZ."*
 
 ### Option 2: Local (for development & testing)
-
-Runs with demo data — great for building integrations, testing prompts, or exploring the API schema before connecting to live data.
 
 ```bash
 pip install oneqaz-trading-mcp
@@ -90,12 +95,10 @@ oneqaz-trading-mcp init    # creates sample SQLite databases
 oneqaz-trading-mcp serve   # starts at http://localhost:8010
 ```
 
-- Swagger UI: `http://localhost:8010/docs`
 - MCP endpoint: `http://localhost:8010/mcp`
+- Local mode uses demo data. For live Trust Layer + signals, use the [Live API](#option-1-live-api--no-install-needed).
 
-> **Note**: Local mode uses static demo data. For live signals updated every minute, use the [Live API](#option-1-live-api--no-install-needed) above.
-
-Then connect from Claude:
+Then connect from any MCP client:
 
 ```json
 {
@@ -107,97 +110,134 @@ Then connect from Claude:
 }
 ```
 
-## Use Cases
+## Access Tiers
 
-### 1. Give your AI agent market awareness
+Endpoints are tier-gated. The server enforces this in middleware — unauthorized calls get HTTP 403 with `error_code = -32001` before the tool handler runs.
 
-Connect OneQAZ and your agent understands market context without you building the pipeline:
+| Tier | Who | Surface |
+|------|-----|---------|
+| **free** | No key / invalid key | 13 Trust Layer tools + global regime + market status + structure + indicators |
+| **pro** | Valid API key (beta) | + `get_signals`, `get_signal_detail`, `explain_decision`, derived/external resources |
+| **internal** | Owner only | + positions, trade history, LLM decisions, strategy distribution |
+
+**Tool tier map** is a single source of truth (`tier_registry.py`) shared across server, admin UI, and docs — the gate can never drift from what's documented.
+
+### Self-hosting with tier gate
+
+If you run the server locally and want to authenticate higher-tier callers, set `MCP_TIER_RESOLVER` to a `module:function` path:
+
+```bash
+MCP_TIER_RESOLVER=myauth.keystore:resolve_tier oneqaz-trading-mcp serve
+```
+
+The function receives the raw API key string and must return `"free"`, `"pro"`, or `"internal"`. Default behavior (no resolver): every caller is `free`.
+
+## Tools (27 total)
+
+### Trust Layer — free tier (13 tools)
+
+Exposed without authentication so AI agents can self-verify before recommending.
+
+| Tool | Returns |
+|------|---------|
+| `get_prediction_accuracy` | Verified hit rates per macro category (with `sample_count`) |
+| `get_backtest_tuning_state` | Active tuning parameters + last recalibration timestamp |
+| `get_monthly_accuracy_trend` | Rolling 12-month accuracy per category |
+| `get_news_leading_indicator_performance` | Pre-news detection lead time + accuracy |
+| `get_news_causality_breakdown` | News → market causality tags with hit rates |
+| `get_feature_governance_state` | Features by status (OBSERVATION/CONDITIONAL/ACTIVE/DEPRECATED) |
+| `get_structure_calibration` | Structure-learning calibration snapshot |
+| `get_structure_validation_history` | Historical structure-validation scores |
+| `get_strategy_leaderboard` | RL-learned strategies by profit factor |
+| `get_active_predictions` | Currently-open macro predictions with outcome tracking |
+| `get_macro_influence_map` | Macro → market causal hypotheses (lag hours + sensitivity) |
+| `get_cross_market_correlation` | Cross-market correlation matrix |
+| `get_role_analysis` | Role-based strategy analysis |
+
+### Market queries — pro tier (3 tools)
+
+| Tool | Parameters |
+|------|------------|
+| `get_signals` | `market_id`, `symbol`, `min_score`, `max_score`, `action_filter`, `interval` |
+| `get_signal_detail` | `market_id`, `symbol`, `interval` |
+| `explain_decision` | `market_id`, `symbol` |
+
+### Portfolio / owner — internal tier (11 tools)
+
+| Tool | Returns |
+|------|---------|
+| `get_positions` | Open positions with ROI |
+| `get_position_detail` | Single position deep-dive |
+| `get_profitable_positions` / `get_losing_positions` | Filtered by P&L |
+| `get_strategy_distribution` | Position counts by strategy |
+| `get_trade_history` | Historical trades (filters: action, P&L, time) |
+| `analyze_trades` | Aggregate trade analytics |
+| `get_winning_trades` / `get_losing_trades` | Filtered by outcome |
+| `get_latest_decisions` | Recent signal → decision transitions |
+| `get_llm_trading_decisions` | LLM-generated decision logs |
+
+## Resources (34 endpoints)
+
+### Free tier
+
+| Resource URI | Description |
+|--------------|-------------|
+| `market://health` | Server health check |
+| `market://global/summary` | Global macro regime summary |
+| `market://global/category/{category}` | Per-category (bonds, commodities, forex, vix, credit, liquidity, inflation) |
+| `market://global/categories` | Available categories list |
+| `market://all/summary` | Combined summary across all markets |
+| `market://indicators/fear-greed` | Fear & Greed Index |
+| `market://indicators/context` | Combined market context |
+| `market://structure/all` | All markets ETF/basket structure |
+| `market://{market_id}/status` | Market regime + performance aggregate |
+| `market://{market_id}/structure` | Per-market structure analysis |
+
+### Pro tier
+
+| Resource URI | Description |
+|--------------|-------------|
+| `market://{market_id}/signals/summary` | 24h signal aggregation |
+| `market://{market_id}/signals/feedback` | Signal pattern feedback |
+| `market://{market_id}/signals/roles` | Role-based signal summary |
+| `market://{market_id}/derived/*` | Derived signals (5 types) |
+| `market://{market_id}/external/summary` | News / events / fundamentals |
+| `market://{market_id}/external/symbol/{symbol}` | Per-symbol external context |
+| `market://derived/*` | Cross-market derived signals |
+
+### Internal tier
+
+| Resource URI | Description |
+|--------------|-------------|
+| `market://{market_id}/positions/snapshot` | Current positions snapshot |
+| `market://{market_id}/unified` | Market-level unified (positions + context) |
+| `market://{market_id}/unified/symbol/{symbol}` | Per-symbol unified context chain |
+
+**Market IDs**: `crypto`, `kr_stock`, `us_stock` (aliases: `coin`, `kr`, `us`)
+
+## Sample: Trust Layer query
 
 ```python
-# Your agent reads regime + signals + macro in one call
-context = mcp.read("market://crypto/unified")
+from mcp import Client
+client = Client("https://api.oneqaz.com/mcp")
 
-# Or go granular
-regime = mcp.read("market://crypto/status")          # what phase is the market in?
-signals = mcp.call("get_signals", market_id="crypto", min_score=0.7)  # what's working now?
-macro = mcp.read("market://global/summary")           # what's driving this from above?
+acc = await client.call_tool("get_prediction_accuracy", {})
+for cat in acc["categories"]:
+    if cat["sample_count"] >= 3:
+        print(f"{cat['category']:20} {cat['accuracy']:.1%} (n={cat['sample_count']})")
 
-# Feed to your agent's decision layer
-prompt = f"""
-  Regime: {regime}
-  High-confidence signals: {signals}
-  Macro context: {macro}
-
-  Recommend portfolio action.
-"""
+# Output (example):
+# bonds                62.5% (n=24)
+# forex                58.3% (n=12)
+# vix                  71.4% (n=14)
+# ...
 ```
 
-### 2. Build a regime-aware trading system
-
-Your AI reacts differently based on market state — no hardcoded rules:
-
-```python
-regime = mcp.read("market://us_stock/status")
-structure = mcp.read("market://us_stock/structure")
-
-if regime["regime"]["stage"] == "volatile":
-    signals = mcp.call("get_signals", market_id="us_stock", action_filter="DEFENSIVE")
-else:
-    signals = mcp.call("get_signals", market_id="us_stock", min_score=0.7)
-```
-
-### 3. Cross-market macro→micro analysis
-
-Trace how macro shifts flow into individual assets:
-
-```python
-# Macro layer
-global_regime = mcp.read("market://global/summary")
-bonds = mcp.read("market://global/category/bonds")
-
-# Cross-market correlation
-cross = mcp.read("market://unified/cross-market")
-
-# Down to individual symbol with full context chain
-symbol_ctx = mcp.read("market://us_stock/unified/symbol/NVDA")
-```
-
-### 4. Ask Claude directly
-
-Already using Claude? Just connect and ask:
-
-```
-"What's the current market regime for crypto?"
-"Show me the best performing positions in US stocks"
-"Any macro risks I should know about?"
-"Compare crypto vs US stock conditions"
-```
-
-## Sample Response
-
-Reading `market://crypto/status` returns:
+Every response also carries a plain-text summary:
 
 ```json
 {
-  "market_id": "crypto",
-  "regime": {
-    "stage": "sideways_bullish",
-    "score": 0.42,
-    "confidence": 0.78
-  },
-  "positions": {
-    "total": 5,
-    "long": 4,
-    "short": 1,
-    "avg_roi": 3.2
-  },
-  "signals_24h": {
-    "buy": 8,
-    "sell": 3,
-    "hold": 12,
-    "avg_score": 0.65
-  },
-  "_llm_summary": "Crypto market is sideways_bullish. 5 active positions (avg ROI +3.2%). 8 BUY signals in last 24h."
+  "_llm_summary": "7/8 macro categories above 55% accuracy, sample sizes 8-24. Bonds + VIX categories most validated."
 }
 ```
 
@@ -210,47 +250,14 @@ All configuration is via environment variables:
 | `MCP_SERVER_PORT` | `8010` | Server port |
 | `MCP_SERVER_HOST` | `0.0.0.0` | Bind host |
 | `MCP_LOG_LEVEL` | `INFO` | Log level |
+| `MCP_TIER_RESOLVER` | _unset_ | `module:function` returning tier for an API key |
+| `MCP_ANALYTICS_DB` | `<pkg>/data_storage/mcp_analytics.db` | Per-request audit log (SQLite) |
 | `DATA_ROOT` | Auto-detect | Root directory for all data |
 | `MCP_COIN_DATA_DIR` | `{DATA_ROOT}/market/coin_market/data_storage` | Crypto data directory |
 | `MCP_KR_DATA_DIR` | `{DATA_ROOT}/market/kr_market/data_storage` | KR stock data directory |
 | `MCP_US_DATA_DIR` | `{DATA_ROOT}/market/us_market/data_storage` | US stock data directory |
 | `MCP_EXTERNAL_CONTEXT_DATA_DIR` | `{DATA_ROOT}/external_context/data_storage` | External context directory |
 | `MCP_GLOBAL_REGIME_DATA_DIR` | `{DATA_ROOT}/market/global_regime/data_storage` | Global regime directory |
-
-## Resources
-
-| Resource URI | Description |
-|-------------|-------------|
-| `market://health` | Server health check |
-| `market://global/summary` | Global macro regime summary |
-| `market://global/category/{category}` | Per-category analysis (bonds, commodities, forex, vix, credit, liquidity, inflation) |
-| `market://global/categories` | Available categories list |
-| `market://structure/all` | All markets ETF/basket structure |
-| `market://{market_id}/structure` | Per-market structure analysis |
-| `market://{market_id}/status` | Market status (regime, positions, performance) |
-| `market://{market_id}/positions/snapshot` | Current positions snapshot |
-| `market://all/summary` | All markets combined summary |
-| `market://indicators/fear-greed` | Fear & Greed Index |
-| `market://indicators/context` | Combined market context |
-| `market://{market_id}/signals/summary` | Signal summary (24h aggregation) |
-| `market://{market_id}/signals/feedback` | Signal pattern feedback |
-| `market://{market_id}/signals/roles` | Role-based signal summary |
-| `market://{market_id}/external/summary` | External context (news, events, fundamentals) |
-| `market://{market_id}/external/symbol/{symbol}` | Per-symbol external context |
-| `market://{market_id}/unified/symbol/{symbol}` | Unified technical + external context |
-| `market://{market_id}/unified` | Market-level unified context |
-| `market://unified/cross-market` | Cross-market pattern analysis |
-
-**Market IDs**: `crypto`, `kr_stock`, `us_stock` (aliases: `coin`, `kr`, `us`)
-
-## Tools
-
-| Tool | Parameters | Description |
-|------|-----------|-------------|
-| `get_trade_history` | market_id, limit, action_filter, min_pnl, max_pnl, hours_back | Query trade history with filters |
-| `get_positions` | market_id, min_roi, max_roi, strategy, sort_by, sort_order, limit | Query open positions |
-| `get_signals` | market_id, symbol, min_score, max_score, action_filter, interval | Query trading signals |
-| `get_latest_decisions` | market_id, limit, decision_filter, hours_back | Query recent trading decisions |
 
 ## Docker
 
@@ -281,23 +288,18 @@ docker run -p 8010:8010 oneqaz-trading-mcp
 
 ## Rate Limits
 
-| Tier | Daily Quota | Burst | Price |
-|------|------------|-------|-------|
-| **Free** (no key) | 5,000 req/day | 60 req/min | Free |
-| **API Key** | 50,000 req/day | 300 req/min | Free (beta) |
-| **Local** | Unlimited | Unlimited | Self-hosted |
-
-**What this means at Free tier:**
-- Monitor 5+ symbols all day with 1-min polling → ~7,200 req → fits within free
-- Full market scan + continuous monitoring → comfortable headroom
-- No API key needed to get started — just connect and go
-
-**API key** (free during beta): Register at [oneqaz.com](https://oneqaz.com) for higher limits.
+| Tier | Daily Quota | Burst |
+|------|------------|-------|
+| **Free** (no key) | 5,000 req/day | 60 req/min |
+| **Pro** (API key, beta) | 50,000 req/day | 300 req/min |
+| **Internal** (owner) | Unlimited | Unlimited |
+| **Local** (self-hosted) | Unlimited | Unlimited |
 
 **Response headers** on every request:
+- `X-RateLimit-Tier`: resolved tier (`free`/`pro`/`internal`)
 - `X-RateLimit-Daily-Remaining`: requests left today
 - `X-RateLimit-Minute-Remaining`: requests left this minute
-- Exceeding limits returns HTTP 429 with `Retry-After` header
+- Exceeding limits returns HTTP 429 with `Retry-After` header.
 
 ## Disclaimer
 

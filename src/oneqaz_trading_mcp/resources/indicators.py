@@ -16,12 +16,12 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from mcps.config import (
+from oneqaz_trading_mcp.config import (
     CACHE_TTL_FEAR_GREED,
     CACHE_TTL_MARKET_STATUS,
     PROJECT_ROOT,
 )
-from mcps.resources.resource_response import (
+from oneqaz_trading_mcp.resources.resource_response import (
     mcp_error,
     MCPErrorCode,
     MCPErrorAction,

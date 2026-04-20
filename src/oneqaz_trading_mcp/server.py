@@ -49,7 +49,7 @@ except ImportError as e:
 # 프로젝트 경로 추가
 sys.path.insert(0, str(__file__).rsplit("mcps", 1)[0].rstrip("/\\"))
 
-from mcps.config import (
+from oneqaz_trading_mcp.config import (
     MCP_SERVER_HOST,
     MCP_SERVER_PORT,
     MCP_STATELESS,
@@ -59,9 +59,9 @@ from mcps.config import (
     PROJECT_ROOT,
     EXTERNAL_CONTEXT_DATA_DIR,
 )
-from mcps.resources.resource_response import to_resource_text
-from mcps.rate_limiter import rate_limiter
-from mcps.analytics import analytics_writer
+from oneqaz_trading_mcp.resources.resource_response import to_resource_text
+from oneqaz_trading_mcp.rate_limiter import rate_limiter
+from oneqaz_trading_mcp.analytics import analytics_writer
 
 # ---------------------------------------------------------------------------
 # 로깅 설정
@@ -230,7 +230,7 @@ def server_info() -> Dict[str, Any]:
         서버 메타 정보 및 데이터 소스 목록
     [출력 스키마] name(str), description(str), version(str), data_sources{global_regime,markets_trading{market_id→{path,exists}},markets_signal{market_id→{path,exists,db_count}},analysis{category→{path,exists}}}, endpoints{resources[],tools[]}.
     """
-    from mcps.config import (
+    from oneqaz_trading_mcp.config import (
         GLOBAL_REGIME_SUMMARY_JSON,
         MARKET_DB_PATHS,
         SIGNAL_DIR_PATHS,
@@ -397,7 +397,7 @@ def get_tool_chains_meta() -> str:
 
 def register_all_resources():
     """모든 Resource 등록"""
-    from mcps.resources import (
+    from oneqaz_trading_mcp.resources import (
         register_global_regime_resources,
         register_market_status_resources,
         register_market_structure_resources,
@@ -421,7 +421,7 @@ def register_all_resources():
 
 def register_all_tools():
     """모든 Tool 등록"""
-    from mcps.tools import (
+    from oneqaz_trading_mcp.tools import (
         register_trade_history_tools,
         register_position_tools,
         register_decision_tools,
@@ -478,15 +478,80 @@ def _create_rate_limit_middleware():
             if ip in ("127.0.0.1", "::1", "local"):
                 return await call_next(request)
 
-            # Resolve tier from API key
+            # Resolve tier from API key. OneQAZ's hosted deployment uses an
+            # internal key_store; self-hosted users can plug in their own via
+            # the MCP_TIER_RESOLVER env var (module:function). Otherwise
+            # everyone is treated as 'free' — the tier gate still blocks
+            # sensitive endpoints unless an override elevates the caller.
             api_key = request.headers.get("x-api-key") or request.headers.get("authorization", "").removeprefix("Bearer ").strip()
             tier = "free"
             if api_key:
+                resolver_path = os.environ.get("MCP_TIER_RESOLVER", "").strip()
+                if resolver_path:
+                    try:
+                        mod_name, fn_name = resolver_path.rsplit(":", 1)
+                        import importlib
+                        mod = importlib.import_module(mod_name)
+                        tier = getattr(mod, fn_name)(api_key) or "free"
+                    except Exception:
+                        tier = "free"
+
+            # Parse JSON-RPC body for analytics metadata + tier gate.
+            # Starlette's BaseHTTPMiddleware caches body internally so
+            # downstream FastMCP handlers can still read it.
+            req_type, req_name = "mcp", "unknown"
+            if request.method == "POST":
                 try:
-                    from api.marketplace.key_store import get_tier_for_key
-                    tier = get_tier_for_key(api_key)
+                    import json as _json
+                    body = await request.body()
+                    payload = _json.loads(body)
+                    method = payload.get("method", "")
+                    params = payload.get("params", {})
+                    if method == "resources/read":
+                        req_type, req_name = "resource", params.get("uri", "unknown")
+                    elif method == "tools/call":
+                        req_type, req_name = "tool", params.get("name", "unknown")
+                    elif method:
+                        req_type, req_name = "mcp", method
                 except Exception:
-                    pass  # Fall back to free tier if key_store unavailable
+                    pass
+
+            # Tier gate — sensitive tools/resources require a higher tier.
+            from oneqaz_trading_mcp.tier_registry import check_access
+            tier_ok, required_tier = check_access(req_type, req_name, tier)
+            if not tier_ok:
+                logger.warning(
+                    "Tier blocked: %s=%s (caller=%s, required=%s, ip=%s)",
+                    req_type, req_name, tier, required_tier, ip,
+                )
+                try:
+                    analytics_writer.log_request(
+                        ip=ip, request_type=req_type, name=req_name,
+                        success=False, response_ms=0,
+                        error_code=f"tier_blocked_{required_tier}",
+                        user_agent=user_agent,
+                    )
+                except Exception:
+                    pass
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "jsonrpc": "2.0",
+                        "error": {
+                            "code": -32001,
+                            "message": (
+                                f"This {req_type} requires '{required_tier}' tier. "
+                                f"Your tier: '{tier}'. "
+                                "Request access: https://oneqaz.com/mcp/access"
+                            ),
+                            "data": {
+                                "required_tier": required_tier,
+                                "caller_tier": tier,
+                                "resource": req_name,
+                            },
+                        }
+                    },
+                )
 
             # Rate limit by API key (if pro) or IP (if free)
             identity = api_key if (api_key and tier != "free") else ip
@@ -514,24 +579,6 @@ def _create_rate_limit_middleware():
                     },
                     headers={"Retry-After": str(info.get("retry_after", 60))},
                 )
-
-            # Parse JSON-RPC body for analytics metadata
-            req_type, req_name = "mcp", "unknown"
-            if request.method == "POST":
-                try:
-                    import json as _json
-                    body = await request.body()
-                    payload = _json.loads(body)
-                    method = payload.get("method", "")
-                    params = payload.get("params", {})
-                    if method == "resources/read":
-                        req_type, req_name = "resource", params.get("uri", "unknown")
-                    elif method == "tools/call":
-                        req_type, req_name = "tool", params.get("name", "unknown")
-                    elif method:
-                        req_type, req_name = "mcp", method
-                except Exception:
-                    pass
 
             # Time the request + log analytics
             t0 = time.time()

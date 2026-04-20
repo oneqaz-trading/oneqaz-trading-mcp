@@ -13,8 +13,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
-from mcps.config import CACHE_TTL_MARKET_STATUS, get_external_db_path
-from mcps.resources.resource_response import (
+from oneqaz_trading_mcp.config import CACHE_TTL_MARKET_STATUS, get_external_db_path
+from oneqaz_trading_mcp.resources.resource_response import (
     build_resource_explanation,
     to_resource_text,
     with_explanation_contract,

@@ -26,7 +26,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 
-from mcps.config import (
+from oneqaz_trading_mcp.config import (
     PROJECT_ROOT,
     CACHE_TTL_MARKET_STATUS,
     get_market_db_path,
@@ -36,7 +36,7 @@ from mcps.config import (
     get_structure_summary_path,
     GLOBAL_REGIME_SUMMARY_JSON,
 )
-from mcps.resources.resource_response import (
+from oneqaz_trading_mcp.resources.resource_response import (
     build_resource_explanation,
     to_resource_text,
     with_explanation_contract,
@@ -208,7 +208,7 @@ def _fetch_rows(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> List[
 
 def _load_internal_symbol_snapshot(market_id: str, symbol: str) -> Dict[str, Any]:
     """내부 기술적 데이터: 시그널 DB에서 최신 분석"""
-    from mcps.config import get_signal_db_path
+    from oneqaz_trading_mcp.config import get_signal_db_path
     db_path = get_signal_db_path(market_id, symbol)
     if not db_path or not db_path.exists():
         return {}

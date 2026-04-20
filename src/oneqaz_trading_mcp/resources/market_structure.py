@@ -20,13 +20,13 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 
-from mcps.config import (
+from oneqaz_trading_mcp.config import (
     STRUCTURE_SUMMARY_PATHS,
     ANALYSIS_DB_PATHS,
     get_structure_summary_path,
     get_analysis_db_path,
 )
-from mcps.resources.resource_response import to_resource_text, mcp_error, MCPErrorCode, MCPErrorAction, wrap_with_ai_summary
+from oneqaz_trading_mcp.resources.resource_response import to_resource_text, mcp_error, MCPErrorCode, MCPErrorAction, wrap_with_ai_summary
 
 logger = logging.getLogger("MarketMCP")
 

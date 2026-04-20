@@ -30,7 +30,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from mcps.config import (
+from oneqaz_trading_mcp.config import (
     COIN_DATA_DIR,
     EXTERNAL_CONTEXT_DATA_DIR,
     EXTERNAL_DB_PATHS,
@@ -41,7 +41,7 @@ from mcps.config import (
     US_DATA_DIR,
     get_market_db_path,
 )
-from mcps.resources.resource_response import (
+from oneqaz_trading_mcp.resources.resource_response import (
     MCPErrorAction,
     MCPErrorCode,
     mcp_error,
