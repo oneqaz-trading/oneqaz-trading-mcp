@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added — Specialist Positioning Layer (2026-05-07/08)
+
+- **`get_daily_brief`** (1 new tool, 32 total) — single-call market overview combining macro regime + top 5 strong signals + yesterday's paper-trading P&L + active prediction count + Korean narrative. Natural first call for "what's the market doing today?". 5-minute cache.
+- **`_next_actions`** (response field) — every tool response now carries up to 3 response-data-aware next-tool recommendations with `intent`, `tool`, `args` (pre-filled), `rationale`, `priority`. Driven by **response data** (e.g. weak category detection only fires when `accuracy < 0.5 + samples >= 30`), not a static dependency graph. LLM call count: 0.
+- **`_followup_questions_for_user`** (response field) — Korean natural-language questions the AI can quote verbatim to the end-user. Clicking one triggers the next call. Max 3 entries.
+- **`market://meta/discovery`** v2.0 — dynamic catalog via FastMCP introspection (no static `if/else` to drift), with `data_freshness` PG probe (5 source tables), `positioning` block (specialist_domains, trust_principles, what_we_do_NOT_provide, philosophy), `template_resources[*].example` field with copy-paste-ready URIs.
+- **Layer correlations (4 new tools)** — Stage 2 cross-asset structure: `get_sector_correlations_tool`, `get_macro_causality_graph_tool`, `get_symbol_peer_links_tool`, `get_feature_governance_status_tool`.
+- **Admin chain-depth + client-intent-matrix metrics** — server-side measurement of `_next_actions` effect (deep_chain_pct ≥ 3 = key KPI) and per-client × per-intent breakdown.
+
+### Changed
+
+- Tool count: **27 → 32**. Resource shape: **17 static + 17 templates** (was: "34 endpoints").
+- README rewritten — documents conversation hooks, dynamic discovery, layer correlations, daily_brief.
+
 ## [0.3.0] - 2026-04-20
 
 ### Fixed

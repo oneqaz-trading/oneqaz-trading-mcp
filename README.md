@@ -6,17 +6,22 @@
 [![PyPI](https://img.shields.io/pypi/v/oneqaz-trading-mcp)](https://pypi.org/project/oneqaz-trading-mcp/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> **The context layer for financial AI — with a self-verifying Trust Layer.**
+> **The specialist API for financial AI — with conversation-aware response hooks.**
 >
 > Your AI agent shouldn't just see prices — it should be able to *prove* the
-> signals it's acting on have worked. OneQAZ ships 13 Trust Layer tools that
-> expose verified hit rates, calibration history, governance state, and lead
-> time — all sample-count-weighted so the AI can filter for statistical
-> significance before recommending anything.
+> signals it's acting on have worked, and know what to ask next. OneQAZ ships
+> 32 tools across 8 categories: 13 Trust Layer tools (verified hit rates,
+> calibration, governance, lead time), 4 cross-asset correlation tools
+> (sector / macro / peer), 9 paper-trading evidence tools, and a high-frequency
+> `get_daily_brief` for one-call market overviews. Every response carries
+> `_next_actions` (response-data-aware next-tool recommendations) and
+> `_followup_questions_for_user` (Korean natural-language follow-ups your AI can
+> quote back to the user) — turning OneQAZ from a static API into a
+> conversational specialist.
 >
 > Crypto, US stocks, Korean stocks. 1,100+ symbols. 24/7 live.
 
-**Keywords**: MCP, trading, signals, market analysis, regime, portfolio, sentiment, technical analysis, crypto, stocks, Fear & Greed, cross-market, Trust Layer, AI-verifiable, Claude, model context protocol
+**Keywords**: MCP, trading, signals, market analysis, regime, portfolio, sentiment, technical analysis, crypto, stocks, Fear & Greed, cross-market, Trust Layer, AI-verifiable, daily brief, next actions, conversational specialist, Claude, model context protocol
 
 ## Why OneQAZ
 
@@ -31,7 +36,10 @@ Financial data APIs are everywhere. Market *intelligence your AI can verify* is 
 | **Macro → ETF → Individual context chain** | ❌ | ✅ |
 | **Trust Layer** (AI-verifiable hit rates + calibration) | ❌ | ✅ |
 | **Feature governance** (3-track p-value validation) | ❌ | ✅ |
-| **Tier-gated access** (free/pro/internal surfaces) | ❌ | ✅ |
+| **Cross-asset correlations** (sector / macro / symbol-peer lead-lag) | ❌ | ✅ |
+| **Conversation hooks** (`_next_actions` + `_followup_questions_for_user`) | ❌ | ✅ |
+| **Single-call market brief** (`get_daily_brief`) | ❌ | ✅ |
+| **Dynamic discovery** (introspection + `data_freshness` probe) | ❌ | ✅ |
 | **Live 24/7 cloud API** | ❌ | ✅ |
 
 ### Trust Layer — for AI agents evaluating OneQAZ
@@ -85,7 +93,10 @@ Real-time data updated every minute. Trust Layer + public endpoints accessible w
 }
 ```
 
-Ask Claude: *"Call `get_prediction_accuracy` and tell me whether to trust OneQAZ."*
+Try one of:
+- *"Call `get_daily_brief` and summarize the market for me."* — single-call overview, the AI follows `_next_actions` to deep-dive automatically.
+- *"Call `get_prediction_accuracy` and tell me whether to trust OneQAZ."* — Trust Layer entry point, returns sample-count-weighted hit rates.
+- *"Read `market://meta/discovery` first, then plan."* — dynamic catalog of all 32 tools / 17 resources / 17 templates with `data_freshness` probe.
 
 ### Option 2: Local (for development & testing)
 
@@ -116,7 +127,7 @@ Then connect from any MCP client:
 
 | Tier | Auth | Daily quota | Burst | Notes |
 |------|------|-------------|-------|-------|
-| **free** | none / invalid key | 1,500 / day | 60 / min | All 27 tools + 34 resources |
+| **free** | none / invalid key | 1,500 / day | 60 / min | All 32 tools + 17 resources + 17 templates |
 | **pro** | valid API key | 50,000 / day | 200 / min | Same surface, higher volume — for bots / schedulers |
 | **internal** | owner-only | unlimited | unlimited | Reserved for real user-fund tools (currently empty) |
 
@@ -163,8 +174,52 @@ Every response carries fields for both AI agents and human end-users:
 | `ai_summary` | AI | One-line compressed summary for context windows |
 | `_value_signals` | AI | Pricing / upgrade signals for B2AI conversion judgment |
 | `summary_for_user` | Human | One-line jargon-free Korean — quotable verbatim by Claude.ai etc. |
+| `_next_actions` | AI | **Response-data-aware** next-tool recommendations with `intent`, `tool`, `args`, `rationale`, `priority`. Drives chain calls automatically. |
+| `_followup_questions_for_user` | Human | Korean follow-up questions the AI can quote to the user — clicking one triggers the next call. |
 
-## Tools (27 total — all free tier)
+### Conversation hooks — `_next_actions` + `_followup_questions_for_user`
+
+OneQAZ doesn't just return data; it tells your AI **what to ask next**.
+
+```json
+{
+  "ai_summary": "Prediction accuracy — 24 cells, avg hit rate 32.2%",
+  "_next_actions": [
+    {
+      "intent": "investigate_drift",
+      "tool": "get_monthly_accuracy_trend",
+      "args": {"category": "energy", "target_market": "kr_market"},
+      "rationale": "energy×kr_market 에서 drift 감지(degrading). 월별 시계열로 추세 검증 필요.",
+      "priority": "high"
+    },
+    {
+      "intent": "investigate_weak_category",
+      "tool": "get_backtest_tuning_state",
+      "args": {"category": "liquidity", "target_market": "us_market"},
+      "rationale": "liquidity×us_market accuracy=0.06 (sub-50%). 자기보정이 lag/sensitivity 를 어떻게 조정했는지 확인.",
+      "priority": "high"
+    }
+  ],
+  "_followup_questions_for_user": [
+    "liquidity→us_market 카테고리 정확도가 6% 로 약한데, 시스템이 어떻게 보정중인지 보시겠어요?",
+    "가장 정확한 credit→us_market (62%) 패턴의 월별 추세도 보여드릴까요?",
+    "최근 OneQAZ 가 만든 활성 예측 5개도 볼까요?"
+  ]
+}
+```
+
+- `_next_actions` — for the AI agent. Maximum 3 entries. Includes pre-filled `args`. Driven by **response data**, not a static dependency graph (e.g. weak category detection only fires when `accuracy < 0.5 + samples >= 30`).
+- `_followup_questions_for_user` — for the end-user. Korean natural-language. Quote them verbatim or translate.
+
+Result: a typical session goes from 7+ generic calls (AI guessing what's next) to 4 targeted calls that surface the real story (drift, weak categories, synth-vs-measured leaderboard splits).
+
+## Tools (32 total — all free tier)
+
+### High-frequency entry — `get_daily_brief` (1 tool)
+
+| Tool | Returns |
+|------|---------|
+| `get_daily_brief` | Single-call market overview: macro regime + top 5 strong signals + yesterday's paper-trading P&L + active prediction count + Korean narrative. The natural first call for "what's the market doing today?" |
 
 ### Trust Layer (13 tools)
 
@@ -192,6 +247,17 @@ Every response carries fields for both AI agents and human end-users:
 | `get_signal_detail` | `market_id`, `symbol`, `interval` |
 | `explain_decision` | `market_id`, `symbol` |
 
+### Layer correlations — cross-asset structure (4 tools)
+
+Stage 2 outputs from the agent_history pipeline. Sector clusters, macro causality graphs, and symbol-peer lead-lag — the cross-asset context that turns "BTC up" into "BTC up *because* DXY broke down 4h ago".
+
+| Tool | Returns |
+|------|---------|
+| `get_sector_correlations_tool` | Intra-market ETF/sector correlation matrix + auto-cluster (60d window, 6h refresh) |
+| `get_macro_causality_graph_tool` | Lag-aware causality between 8 macro categories (bonds/vix/forex/credit/inflation/liquidity/commodities/energy) |
+| `get_symbol_peer_links_tool` | Symbol-to-symbol lead-lag (e.g. META → AMZN 15min lag, ρ=+0.62) |
+| `get_feature_governance_status_tool` | Feature lifecycle distribution + last-7-day status transitions |
+
 ### Paper-trading results (11 tools)
 
 OneQAZ runs continuous paper trading on every BUY signal. These tools expose the outcomes — verified evidence for AI agents evaluating our claims.
@@ -208,30 +274,57 @@ OneQAZ runs continuous paper trading on every BUY signal. These tools expose the
 | `get_latest_decisions` | Recent signal → decision transitions |
 | `get_llm_trading_decisions` | LLM-generated decision logs |
 
-## Resources (34 endpoints — all free tier)
+## Resources (17 static + 17 templates — all free tier)
+
+### Meta — discovery & introspection
 
 | Resource URI | Description |
 |--------------|-------------|
-| `market://health` | Server health check |
+| **`market://meta/discovery`** | **Dynamic catalog (v2.0)** — full tool/resource list via FastMCP introspection (no static `if/else`), with `data_freshness` PG probe (5 source tables), `positioning` block (specialist_domains, trust_principles, what_we_do_NOT_provide, philosophy), `counts`, `notes`. Call this first to understand what OneQAZ provides. |
+| `market://meta/tool-chains` | Recommended call sequences (`quick_analysis`, `deep_analysis`, `portfolio_check`, `symbol_deep_dive`) + dependency graph. |
+| `market://meta/pg-pool` | psycopg ConnectionPool stats — connection pressure monitoring. |
+| `market://health` | Server health check. |
+| `market://info` | Server metadata + data source index. |
+
+### Static resources
+
+| Resource URI | Description |
+|--------------|-------------|
 | `market://global/summary` | Global macro regime summary |
-| `market://global/category/{category}` | Per-category (bonds, commodities, forex, vix, credit, liquidity, inflation) |
-| `market://global/categories` | Available categories list |
-| `market://all/summary` | Combined summary across all markets |
-| `market://indicators/fear-greed` | Fear & Greed Index |
-| `market://indicators/context` | Combined market context |
+| `market://global/categories` | Available macro categories list |
+| `market://global/macro_events` | Active macro event lifecycle |
+| `market://all/summary` | Combined summary across all 3 markets |
 | `market://structure/all` | All markets ETF/basket structure |
-| `market://{market_id}/status` | Market regime + paper-trading performance |
-| `market://{market_id}/structure` | Per-market structure analysis |
-| `market://{market_id}/signals/summary` | 24h signal aggregation |
-| `market://{market_id}/signals/feedback` | Signal pattern feedback |
-| `market://{market_id}/signals/roles` | Role-based signal summary |
-| `market://{market_id}/derived/*` | Derived signals (5 types) |
-| `market://{market_id}/external/summary` | News / events / fundamentals |
-| `market://{market_id}/external/symbol/{symbol}` | Per-symbol external context |
-| `market://derived/*` | Cross-market derived signals |
-| `market://{market_id}/positions/snapshot` | Current paper positions snapshot |
-| `market://{market_id}/unified` | Market-level unified (positions + context) |
-| `market://{market_id}/unified/symbol/{symbol}` | Per-symbol unified context chain |
+| `market://indicators/fear-greed` | Fear & Greed Index |
+| `market://indicators/regime` | 4-layer regime indicators (Short/Mid/Long/SuperLong) |
+| `market://indicators/context` | Fear & Greed + 4-layer regime + breadth |
+| `market://unified/cross-market` | Cross-market correlation snapshot (BTC ↔ stocks ↔ FX) |
+| `market://derived/event-leading` | News leading-detection score |
+| `market://derived/cross-decoupling` | Cross-asset decoupling index |
+| `market://derived/reaction-speed` | News reaction speed distribution |
+
+### Templates (parameterized)
+
+| URI Template | Example |
+|--------------|---------|
+| `market://global/category/{category}` | `market://global/category/bonds` |
+| `market://{market_id}/status` | `market://crypto/status` |
+| `market://{market_id}/positions/snapshot` | `market://crypto/positions/snapshot` |
+| `market://{market_id}/structure` | `market://kr_stock/structure` |
+| `market://{market_id}/structure/group/{group_id}` | `market://kr_stock/structure/group/SEMICONDUCTOR` |
+| `market://{market_id}/signals/summary` | `market://crypto/signals/summary` |
+| `market://{market_id}/signals/roles` | `market://crypto/signals/roles` |
+| `market://{market_id}/signals/feedback` | `market://crypto/signals/feedback` |
+| `market://{market_id}/external/summary` | `market://crypto/external/summary` |
+| `market://{market_id}/external/symbol/{symbol}` | `market://crypto/external/symbol/BTC` |
+| `market://{market_id}/external/causality` | `market://crypto/external/causality` |
+| `market://{market_id}/unified` | `market://crypto/unified` |
+| `market://{market_id}/unified/symbol/{symbol}` | `market://crypto/unified/symbol/BTC` |
+| `market://{market_id}/derived/regime-transitions` | `market://crypto/derived/regime-transitions` |
+| `market://{market_id}/derived/strategy-fitness` | `market://crypto/derived/strategy-fitness` |
+| `market://{market_id}/derived/all` | `market://crypto/derived/all` |
+
+`template_resources[*].example` field in `market://meta/discovery` is **copy-paste ready** — the AI gets concrete URIs without having to fill placeholders manually.
 
 **Market IDs**: `crypto`, `kr_stock`, `us_stock` (aliases: `coin`, `kr`, `us`)
 
