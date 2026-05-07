@@ -401,15 +401,18 @@ docker run -p 8010:8010 oneqaz-trading-mcp
 
 ## Rate Limits
 
-| Tier | Daily Quota | Burst |
-|------|------------|-------|
-| **Free** (no key) | 5,000 req/day | 60 req/min |
-| **Pro** (API key, beta) | 50,000 req/day | 300 req/min |
-| **Internal** (owner) | Unlimited | Unlimited |
-| **Local** (self-hosted) | Unlimited | Unlimited |
+Authoritative quotas live in [Access Policy](#access-policy) above. Quick recap:
+
+| Tier | Daily Quota | Burst | Auth |
+|------|-------------|-------|------|
+| **Free** | 1,500 / day | 60 / min | none / invalid key |
+| **Pro** (beta) | 50,000 / day | 200 / min | valid API key |
+| **Internal** (owner) | Unlimited | Unlimited | owner-only |
+| **Local** (self-hosted) | Unlimited | Unlimited | n/a |
 
 **Response headers** on every request:
 - `X-RateLimit-Tier`: resolved tier (`free`/`pro`/`internal`)
+- `X-RateLimit-Daily-Limit`: today's ceiling for the resolved tier
 - `X-RateLimit-Daily-Remaining`: requests left today
 - `X-RateLimit-Minute-Remaining`: requests left this minute
 - Exceeding limits returns HTTP 429 with `Retry-After` header.
