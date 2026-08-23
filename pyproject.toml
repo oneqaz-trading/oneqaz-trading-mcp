@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oneqaz-trading-mcp"
-version = "0.3.0"
+version = "0.4.0"
 description = "MCP server for trading signal analysis, position monitoring, market regime detection, and Trust Layer (B2AI credibility verification)"
 readme = "README.md"
 license = {text = "MIT"}
@@ -25,6 +25,7 @@ classifiers = [
 ]
 dependencies = [
     "fastmcp>=2.14,<3",
+    "psycopg[binary,pool]>=3.1",
 ]
 
 [project.scripts]

@@ -14,7 +14,6 @@ Derived Signals Resources
 from __future__ import annotations
 
 import asyncio
-import sqlite3
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List
@@ -24,6 +23,7 @@ from oneqaz_trading_mcp.config import (
     EXTERNAL_CONTEXT_DATA_DIR,
     PROJECT_ROOT,
     get_external_db_path,
+    connect_readonly,
 )
 from oneqaz_trading_mcp.resources.resource_response import (
     build_resource_explanation,
@@ -40,7 +40,7 @@ logger = logging.getLogger("MarketMCP")
 
 # ── 공통 헬퍼 ──
 
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+def _table_exists(conn: object, table_name: str) -> bool:
     row = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
         (table_name,),
@@ -48,8 +48,7 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     return row is not None
 
 
-def _fetch_all(conn: sqlite3.Connection, query: str, params: tuple = ()) -> List[Dict[str, Any]]:
-    conn.row_factory = sqlite3.Row
+def _fetch_all(conn: object, query: str, params: tuple = ()) -> List[Dict[str, Any]]:
     rows = conn.execute(query, params).fetchall()
     return [dict(r) for r in rows]
 
@@ -75,8 +74,12 @@ def _get_agent_history_db_path(market_id: str):
 
 def _load_event_leading_scores() -> Dict[str, Any]:
     """news DB에서 이벤트 선행 점수 조회."""
-    db_path = _get_news_db_path()
-    if not db_path.exists():
+    try:
+        from external_context.core.db_utils import resolve_db_path
+        db_path = resolve_db_path("news", "event_leading_scores")
+    except ImportError:
+        db_path = _get_news_db_path()
+    if not db_path:  # [2026-07-03] PG 논리 키 — 파일 존재 검사 제거
         return mcp_error(
             MCPErrorCode.DB_NOT_FOUND,
             "news DB not found",
@@ -85,7 +88,7 @@ def _load_event_leading_scores() -> Dict[str, Any]:
         )
 
     try:
-        with sqlite3.connect(str(db_path), timeout=10) as conn:
+        with connect_readonly(db_path, timeout=10) as conn:
             if not _table_exists(conn, "event_leading_scores"):
                 return {"scores": [], "note": "테이블 미생성 (첫 사이클 대기)"}
 
@@ -155,7 +158,7 @@ def _load_regime_transition_probs(market_id: str) -> Dict[str, Any]:
     ec_mid = ec_map.get(market_id.lower(), market_id.lower())
     db_path = EXTERNAL_CONTEXT_DATA_DIR / ec_mid / "external_context.db"
 
-    if not db_path.exists():
+    if not db_path:  # [2026-07-03] PG 논리 키 — 파일 존재 검사 제거
         return mcp_error(
             MCPErrorCode.DB_NOT_FOUND,
             f"DB not found for {ec_mid}",
@@ -165,7 +168,7 @@ def _load_regime_transition_probs(market_id: str) -> Dict[str, Any]:
         )
 
     try:
-        with sqlite3.connect(str(db_path), timeout=10) as conn:
+        with connect_readonly(db_path, timeout=10) as conn:
             if not _table_exists(conn, "regime_transition_probs"):
                 return {"market_id": market_id, "transitions": [], "note": "테이블 미생성"}
 
@@ -228,7 +231,7 @@ def _build_transition_summary(market_id: str, current: str | None, rows: List[Di
 def _load_cross_market_decoupling() -> Dict[str, Any]:
     """news DB에서 디커플링 지수 조회."""
     db_path = _get_news_db_path()
-    if not db_path.exists():
+    if not db_path:  # [2026-07-03] PG 논리 키 — 파일 존재 검사 제거
         return mcp_error(
             MCPErrorCode.DB_NOT_FOUND,
             "news DB not found",
@@ -237,7 +240,7 @@ def _load_cross_market_decoupling() -> Dict[str, Any]:
         )
 
     try:
-        with sqlite3.connect(str(db_path), timeout=10) as conn:
+        with connect_readonly(db_path, timeout=10) as conn:
             if not _table_exists(conn, "cross_market_decoupling"):
                 return {"pairs": [], "note": "테이블 미생성"}
 
@@ -302,8 +305,12 @@ def _build_decoupling_summary(pairs: List[Dict], avg: float) -> str:
 
 def _load_news_reaction_speed() -> Dict[str, Any]:
     """news DB에서 뉴스 반응 속도 조회."""
-    db_path = _get_news_db_path()
-    if not db_path.exists():
+    try:
+        from external_context.core.db_utils import resolve_db_path
+        db_path = resolve_db_path("news", "news_reaction_speed")
+    except ImportError:
+        db_path = _get_news_db_path()
+    if not db_path:  # [2026-07-03] PG 논리 키 — 파일 존재 검사 제거
         return mcp_error(
             MCPErrorCode.DB_NOT_FOUND,
             "news DB not found",
@@ -312,7 +319,7 @@ def _load_news_reaction_speed() -> Dict[str, Any]:
         )
 
     try:
-        with sqlite3.connect(str(db_path), timeout=10) as conn:
+        with connect_readonly(db_path, timeout=10) as conn:
             if not _table_exists(conn, "news_reaction_speed"):
                 return {"speed_bands": [], "note": "테이블 미생성"}
 
@@ -368,19 +375,14 @@ def _build_reaction_speed_summary(bands: List[Dict]) -> str:
 # ═══════════════════════════════════════════════════════════════════
 
 def _load_strategy_fitness(market_id: str) -> Dict[str, Any]:
-    """agent_history DB에서 전략 적합도 점수 조회."""
-    db_path = _get_agent_history_db_path(market_id)
-    if not db_path.exists():
-        return mcp_error(
-            MCPErrorCode.DB_NOT_FOUND,
-            f"agent_history DB not found for {market_id}",
-            action=MCPErrorAction.CHECK,
-            market_id=market_id,
-            fitness=[],
-        )
+    """agent_history DB에서 전략 적합도 점수 조회.
 
+    Phase 4 이관 완료: agent_history 는 PG 단일 스키마로 통합됨.
+    db_path 는 route 매핑용 logical key 로만 쓰이고, 파일 존재 여부는 확인하지 않는다.
+    """
+    db_path = _get_agent_history_db_path(market_id)
     try:
-        with sqlite3.connect(str(db_path), timeout=10) as conn:
+        with connect_readonly(db_path, timeout=10) as conn:
             if not _table_exists(conn, "strategy_fitness"):
                 return {"market_id": market_id, "fitness": [], "note": "테이블 미생성"}
 
@@ -489,7 +491,7 @@ def _load_all_derived_signals(market_id: str) -> Dict[str, Any]:
                     result[key] = future.result(timeout=5)
                 except Exception as e:
                     logger.warning("파생 시그널 %s 로드 실패: %s", key, e)
-                    result[key] = {"error": str(e)}
+                    result[key] = {"unavailable": True, "reason": "데이터 수집 중"}
         except (TimeoutError, FuturesTimeoutError):
             logger.warning("파생 시그널 일괄 조회 20초 초과, 미완료 태스크 스킵")
     # as_completed timeout 시 미완료 태스크 에러 처리

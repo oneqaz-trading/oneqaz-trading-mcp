@@ -8,12 +8,11 @@ external_context DB(시장별 외부 데이터) 조회 Resource.
 from __future__ import annotations
 
 import asyncio
-import sqlite3
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
-from oneqaz_trading_mcp.config import CACHE_TTL_MARKET_STATUS, get_external_db_path
+from oneqaz_trading_mcp.config import CACHE_TTL_MARKET_STATUS, get_external_db_path, connect_readonly
 from oneqaz_trading_mcp.resources.resource_response import (
     build_resource_explanation,
     to_resource_text,
@@ -27,7 +26,7 @@ from oneqaz_trading_mcp.resources.resource_response import (
 logger = logging.getLogger("MarketMCP")
 
 
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+def _table_exists(conn: object, table_name: str) -> bool:
     row = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
         (table_name,),
@@ -35,24 +34,62 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     return row is not None
 
 
-def _fetch_all(conn: sqlite3.Connection, query: str, params: tuple = ()) -> List[Dict[str, Any]]:
-    conn.row_factory = sqlite3.Row
+def _fetch_all(conn: object, query: str, params: tuple = ()) -> List[Dict[str, Any]]:
     rows = conn.execute(query, params).fetchall()
     return [dict(r) for r in rows]
 
 
-def _latest_updated_at(conn: sqlite3.Connection) -> str | None:
+# [2026-06-15] market_id 라우팅 — SQLite 시절엔 시장별 DB 파일이 물리 분리라 테이블
+# read 에 market_id 필터가 불필요했다. PG 통합 후 external_context 한 스키마에 전 시장이
+# 모이면서, 필터 없는 'FROM fundamentals' 가 시총 큰 KR 종목을 코인/미국 시장에도 노출
+# (실측: coin/kr/us 모두 005930 삼성전자 반환). 펀더멘털 값을 발화에 노출하기 시작하면
+# '코인장인데 삼성전자' 환각이 되므로 함께 차단. fundamentals/symbol_master 만 market_id
+# 컬럼 보유(market_metrics/scheduled_events 는 미보유 → 필터 불가, 별도 이슈).
+_MKT_ID_NORM = {
+    "crypto": "coin_market", "coin": "coin_market", "coin_market": "coin_market",
+    "kr": "kr_market", "kr_stock": "kr_market", "kr_market": "kr_market",
+    "us": "us_market", "us_stock": "us_market", "us_market": "us_market",
+}
+
+
+def _norm_market_id(market_id: str) -> str:
+    """입력 market_id 를 fundamentals/symbol_master 의 정규형으로. 매크로 카테고리
+    (bonds/forex/...)는 그대로 통과(테이블 값과 동일)."""
+    return _MKT_ID_NORM.get((market_id or "").lower(), (market_id or "").lower())
+
+
+def _col_exists(conn: object, table: str, column: str) -> bool:
+    """테이블에 컬럼이 있는지. PG(통합)엔 market_id 있음, SQLite 폴백엔 없을 수 있어
+    필터 주입 전 가드. compat shim 이 PRAGMA 를 번역하므로 PRAGMA 우선, 실패 시 False."""
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        for r in rows:
+            d = dict(r) if not isinstance(r, dict) else r
+            if (d.get("name") or "").lower() == column.lower():
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def _latest_updated_at(conn: object) -> str | None:
     if not _table_exists(conn, "pipeline_runs"):
         return None
     row = conn.execute(
         "SELECT fetched_at FROM pipeline_runs ORDER BY id DESC LIMIT 1"
     ).fetchone()
-    return row[0] if row else None
+    if not row:
+        return None
+    value = row[0]
+    # PG는 datetime 객체, SQLite는 TEXT — ExplanationPayloadV1(str) 계약을 맞춤
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value) if value is not None else None
 
 
 def _load_external_summary(market_id: str) -> Dict[str, Any]:
     db_path = get_external_db_path(market_id)
-    if not db_path or not db_path.exists():
+    if not db_path:  # [2026-07-03] PG 논리 키 — 파일 존재 검사 제거
         return mcp_error(
             MCPErrorCode.DB_NOT_FOUND,
             f"external_context DB not found for market: {market_id}",
@@ -63,41 +100,80 @@ def _load_external_summary(market_id: str) -> Dict[str, Any]:
         )
 
     try:
-        with sqlite3.connect(str(db_path), timeout=20) as conn:
+        # Read-only URI: external_context writer와 lock contention 없이 동시 read
+        with connect_readonly(db_path, timeout=20) as conn:
+            _mkt = _norm_market_id(market_id)
+            # market_id 컬럼이 있으면(PG 통합) 필터 주입, 없으면(SQLite 폴백) 무필터
+            _sm_flt = _col_exists(conn, "symbol_master", "market_id")
             symbol_master = _fetch_all(
                 conn,
-                """
-                SELECT symbol, name_ko, name_en, sector, industry, is_active, updated_at
-                FROM symbol_master
-                WHERE is_active = 1
-                ORDER BY symbol ASC
-                LIMIT 100
-                """,
+                (
+                    """
+                    SELECT symbol, name_ko, name_en, sector, industry, is_active, updated_at
+                    FROM symbol_master
+                    WHERE is_active = 1 AND market_id = ?
+                    ORDER BY symbol ASC
+                    LIMIT 100
+                    """ if _sm_flt else
+                    """
+                    SELECT symbol, name_ko, name_en, sector, industry, is_active, updated_at
+                    FROM symbol_master
+                    WHERE is_active = 1
+                    ORDER BY symbol ASC
+                    LIMIT 100
+                    """
+                ),
+                (_mkt,) if _sm_flt else (),
             ) if _table_exists(conn, "symbol_master") else []
 
+            _f_flt = _col_exists(conn, "fundamentals", "market_id")
             fundamentals = _fetch_all(
                 conn,
-                """
-                SELECT symbol, market_cap, per, pbr, roe, tvl, active_addresses, dominance,
-                       sector, industry, updated_at
-                FROM fundamentals
-                ORDER BY COALESCE(market_cap, 0) DESC, symbol ASC
-                LIMIT 50
-                """,
+                (
+                    """
+                    SELECT symbol, market_cap, per, pbr, roe, tvl, active_addresses, dominance,
+                           sector, industry, updated_at
+                    FROM fundamentals
+                    WHERE market_id = ?
+                    ORDER BY COALESCE(market_cap, 0) DESC, symbol ASC
+                    LIMIT 50
+                    """ if _f_flt else
+                    """
+                    SELECT symbol, market_cap, per, pbr, roe, tvl, active_addresses, dominance,
+                           sector, industry, updated_at
+                    FROM fundamentals
+                    ORDER BY COALESCE(market_cap, 0) DESC, symbol ASC
+                    LIMIT 50
+                    """
+                ),
+                (_mkt,) if _f_flt else (),
             ) if _table_exists(conn, "fundamentals") else []
 
-            news_events = _fetch_all(
-                conn,
-                """
-                SELECT id, symbol, title, sentiment_score,
-                       sentiment_label, sentiment_confidence, sentiment_model, risk_flags,
-                       impact_level, status, source, published_at,
-                       sector, event_type, lifecycle_stage
-                FROM news_events
-                ORDER BY COALESCE(published_at, created_at) DESC
-                LIMIT 30
-                """,
-            ) if _table_exists(conn, "news_events") else []
+            # news_events → news_churn DB 분리 대응
+            news_events = []
+            try:
+                from external_context.core.db_utils import resolve_db_path
+                _news_db = resolve_db_path(market_id, "news_events")
+            except ImportError:
+                _news_db = db_path
+            if _news_db:  # [2026-07-03] PG 논리 키 — 파일 존재 검사 제거
+                _news_conn = connect_readonly(_news_db, timeout=20) if _news_db != db_path else conn
+                try:
+                    news_events = _fetch_all(
+                        _news_conn,
+                        """
+                        SELECT id, symbol, title, sentiment_score,
+                               sentiment_label, sentiment_confidence, sentiment_model, risk_flags,
+                               impact_level, status, source, published_at,
+                               sector, event_type, lifecycle_stage
+                        FROM news_events
+                        ORDER BY COALESCE(published_at, created_at) DESC
+                        LIMIT 30
+                        """,
+                    ) if _table_exists(_news_conn, "news_events") else []
+                finally:
+                    if _news_db != db_path:
+                        _news_conn.close()
 
             now_iso = datetime.now(timezone.utc).isoformat()
             scheduled_events = _fetch_all(
@@ -123,16 +199,29 @@ def _load_external_summary(market_id: str) -> Dict[str, Any]:
                 """,
             ) if _table_exists(conn, "market_metrics") else []
 
-            news_reaction_history = _fetch_all(
-                conn,
-                """
-                SELECT news_id, market_id, window_minutes, reaction_score, confidence,
-                       lag_minutes, sample_size, direction, news_published_at, computed_at
-                FROM news_reaction_history
-                ORDER BY computed_at DESC
-                LIMIT 30
-                """,
-            ) if _table_exists(conn, "news_reaction_history") else []
+            # news_reaction_history → news_churn DB 분리 대응
+            news_reaction_history = []
+            try:
+                from external_context.core.db_utils import resolve_db_path
+                _nrh_db = resolve_db_path(market_id, "news_reaction_history")
+            except ImportError:
+                _nrh_db = db_path
+            if _nrh_db:  # [2026-07-03] PG 논리 키 — 파일 존재 검사 제거
+                _nrh_conn = connect_readonly(_nrh_db, timeout=20) if _nrh_db != db_path else conn
+                try:
+                    news_reaction_history = _fetch_all(
+                        _nrh_conn,
+                        """
+                        SELECT news_id, market_id, window_minutes, reaction_score, confidence,
+                               lag_minutes, sample_size, direction, news_published_at, computed_at
+                        FROM news_reaction_history
+                        ORDER BY computed_at DESC
+                        LIMIT 30
+                        """,
+                    ) if _table_exists(_nrh_conn, "news_reaction_history") else []
+                finally:
+                    if _nrh_db != db_path:
+                        _nrh_conn.close()
 
             latest_updated = _latest_updated_at(conn)
 
@@ -143,7 +232,6 @@ def _load_external_summary(market_id: str) -> Dict[str, Any]:
 
             summary = {
                 "market_id": market_id,
-                "db_path": str(db_path),
                 "updated_at": latest_updated,
                 "counts": {
                     "symbol_master": len(symbol_master),
@@ -253,6 +341,82 @@ def _load_external_symbol(market_id: str, symbol: str) -> Dict[str, Any]:
     )
 
 
+# [2026-06-15] 펀더멘털 값 렌더 — 기존엔 fundamentals 50행을 로드해놓고 LLM 요약엔
+# "fundamentals: 50" 개수만 출력했다(수집-발화 폭 압축의 대표 누수). 발화가 늘 같은
+# grounding 5-튜플만 반복하던 원인 중 하나. 이미 페이로드에 실려오는 값(시총/PER/PBR/
+# dominance/sector)을 시장 특성에 맞게 top-N 렌더해 거의 공짜로 발화 소재를 넓힌다.
+# 회전(매번 같은 top5 방지)은 호출부 turn 오프셋으로 처리 — 여기선 sector 다양성 우선.
+# 시장별 시총 통화 — KR=원(조/억), US/coin=달러($T/B). 통화 환각 방지(원화를 $로 찍던 버그).
+_CAP_CCY = {"kr_stock": "krw", "kr_market": "krw"}
+
+
+def _fmt_cap(v, ccy: str = "usd") -> str:
+    """시총을 사람이 읽는 단위로. KR=원(조/억), 그 외=달러(T/B/M). None 이면 빈 문자열."""
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return ""
+    if ccy == "krw":
+        if n >= 1e12:
+            return f"{n/1e12:.1f}조원"
+        if n >= 1e8:
+            return f"{n/1e8:.0f}억원"
+        return f"{n:,.0f}원"
+    if n >= 1e12:
+        return f"${n/1e12:.2f}T"
+    if n >= 1e9:
+        return f"${n/1e9:.1f}B"
+    if n >= 1e6:
+        return f"${n/1e6:.0f}M"
+    return f"${n:,.0f}"
+
+
+def _render_fundamentals(funds: list, *, offset: int = 0, limit: int = 6,
+                         market_id: str = "") -> list[str]:
+    """펀더멘털 top-N 을 값과 함께 렌더. 대소문자 심볼 중복 제거 + offset 회전.
+    주식: 시총·PER·PBR / 코인: 시총·dominance(순위) / 공통: sector. 빈 필드는 생략.
+    market_id 로 시총 통화 결정(KR=원, 그 외=달러)."""
+    ccy = _CAP_CCY.get(market_id, "usd")
+    if not funds:
+        return []
+    seen: set = set()
+    uniq = []
+    for f in funds:  # funds 는 이미 market_cap DESC 정렬
+        sym = (f.get("symbol") or "").upper()
+        if not sym or sym in seen:
+            continue
+        seen.add(sym)
+        uniq.append(f)
+    if not uniq:
+        return []
+    n = len(uniq)
+    picked = [uniq[(offset + i) % n] for i in range(min(limit, n))]
+    out = ["- 펀더멘털(시총 상위):"]
+    for f in picked:
+        sym = (f.get("symbol") or "").upper()
+        parts = []
+        cap = _fmt_cap(f.get("market_cap"), ccy)
+        if cap:
+            parts.append(f"시총 {cap}")
+        per = f.get("per")
+        if isinstance(per, (int, float)) and per > 0:
+            parts.append(f"PER {per:.1f}")
+        pbr = f.get("pbr")
+        if isinstance(pbr, (int, float)) and pbr > 0:
+            parts.append(f"PBR {pbr:.1f}")
+        dom = f.get("dominance")
+        if isinstance(dom, (int, float)) and dom > 0:
+            parts.append(f"도미넌스 {int(dom)}위")
+        tvl = f.get("tvl")
+        if isinstance(tvl, (int, float)) and tvl > 0:
+            parts.append(f"TVL {_fmt_cap(tvl, 'usd')}")  # TVL 은 항상 달러
+        sector = (f.get("sector") or "").strip()
+        sec_tag = f" [{sector}]" if sector and sector != "UNKNOWN" else ""
+        body = ", ".join(parts) if parts else "값 없음"
+        out.append(f"  * {sym}: {body}{sec_tag}")
+    return out
+
+
 def _to_llm_summary(data: Dict[str, Any]) -> str:
     counts = data.get("counts", {})
     sectors = data.get("sectors", {})
@@ -268,6 +432,15 @@ def _to_llm_summary(data: Dict[str, Any]) -> str:
         f"- top_sectors: {top_sectors}",
         f"- updated_at: {data.get('updated_at')}",
     ]
+
+    # [2026-06-15] 펀더멘털 값 노출 — updated_at 기반 결정적 오프셋으로 회전(매 갱신마다
+    # 다른 종목 셋). 워커 무관·랜덤 미사용(결정적). 갱신이 없으면 같은 셋 유지(안정).
+    funds = data.get("fundamentals") or []
+    if funds:
+        _stamp = str(data.get("updated_at") or "")
+        _off = sum(ord(c) for c in _stamp[-6:]) if _stamp else 0
+        lines.extend(_render_fundamentals(
+            funds, offset=_off, limit=6, market_id=data.get("market_id", "")))
 
     news = data.get("news_events") or []
     top_news = [n for n in news if n.get("title")][:5]
@@ -297,7 +470,9 @@ def _to_llm_summary(data: Dict[str, Any]) -> str:
         for e in upcoming:
             title = (e.get("title") or "")[:60]
             scheduled = e.get("scheduled_at", "")
-            date_tag = f" ({scheduled[:10]})" if scheduled else ""
+            # PG는 datetime 객체, SQLite는 TEXT — 둘 다 안전하게 처리
+            scheduled_str = scheduled.isoformat() if hasattr(scheduled, "isoformat") else str(scheduled or "")
+            date_tag = f" ({scheduled_str[:10]})" if scheduled_str else ""
             lines.append(f"  * {title}{date_tag}")
 
     return "\n".join(lines)
@@ -323,8 +498,12 @@ def _to_llm_symbol_summary(data: Dict[str, Any]) -> str:
 def _load_causality_summary(market_id: str) -> Dict[str, Any]:
     """뉴스-시장 인과관계 분석 결과를 로드한다."""
     # news DB에서 해당 마켓의 causality 분석 결과 조회
-    news_db_path = get_external_db_path("news")
-    if not news_db_path or not news_db_path.exists():
+    try:
+        from external_context.core.db_utils import resolve_db_path
+        news_db_path = resolve_db_path("news", "news_causality_analysis")
+    except ImportError:
+        news_db_path = get_external_db_path("news")
+    if not news_db_path:  # [2026-07-03] PG 논리 키 — 파일 존재 검사 제거
         return mcp_error(
             MCPErrorCode.DB_NOT_FOUND,
             "news DB not found",
@@ -333,7 +512,7 @@ def _load_causality_summary(market_id: str) -> Dict[str, Any]:
         )
 
     try:
-        with sqlite3.connect(str(news_db_path), timeout=10) as conn:
+        with connect_readonly(news_db_path, timeout=10) as conn:
             if not _table_exists(conn, "news_causality_analysis"):
                 return mcp_error(
                     MCPErrorCode.NO_DATA,
@@ -462,7 +641,7 @@ def _to_causality_llm_summary(data: Dict[str, Any]) -> str:
 def _load_macro_events() -> Dict[str, Any]:
     """활성 매크로 이벤트 라이프사이클 목록 로드."""
     news_db_path = get_external_db_path("news")
-    if not news_db_path or not news_db_path.exists():
+    if not news_db_path:  # [2026-07-03] PG 논리 키 — 파일 존재 검사 제거
         return mcp_error(
             MCPErrorCode.DB_NOT_FOUND,
             "news DB not found",
@@ -470,7 +649,7 @@ def _load_macro_events() -> Dict[str, Any]:
         )
 
     try:
-        with sqlite3.connect(str(news_db_path), timeout=10) as conn:
+        with connect_readonly(news_db_path, timeout=10) as conn:
             if not _table_exists(conn, "macro_event_narratives"):
                 return mcp_error(
                     MCPErrorCode.NO_DATA,
@@ -500,6 +679,11 @@ def _load_macro_events() -> Dict[str, Any]:
                 """,
             )
 
+            # 보조 테이블은 PG 에는 항상 있지만 SQLite 로 export 된 레이아웃에는
+            # narratives 만 있는 경우가 있다. 없으면 graceful degrade.
+            has_dev = _table_exists(conn, "macro_event_developments")
+            has_impact = _table_exists(conn, "macro_event_market_impact")
+
             # 각 이벤트의 최근 전개
             for evt in events:
                 event_id = evt.get("event_id", "")
@@ -515,7 +699,7 @@ def _load_macro_events() -> Dict[str, Any]:
                     LIMIT 5
                     """,
                     (event_id,),
-                )
+                ) if has_dev else []
                 evt["recent_developments"] = developments
 
                 # 시장별 최신 민감도
@@ -529,7 +713,7 @@ def _load_macro_events() -> Dict[str, Any]:
                     LIMIT 9
                     """,
                     (event_id,),
-                )
+                ) if has_impact else []
                 # 시장별 최신만
                 seen = {}
                 for mi in market_impact:
@@ -547,6 +731,7 @@ def _load_macro_events() -> Dict[str, Any]:
             result["_llm_summary"] = _to_macro_events_llm_summary(result)
 
             explanation = build_resource_explanation(
+                market="global",
                 entity_type="system",
                 explanation_type="mcp_macro_events",
                 as_of_time=datetime.now(timezone.utc).isoformat(),

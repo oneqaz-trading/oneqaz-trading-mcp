@@ -75,7 +75,8 @@ def _fetch_fear_greed_from_api() -> Dict[str, Any]:
                 return json.loads(cache_path.read_text(encoding="utf-8"))
         except Exception:
             pass
-        return {"value": 50, "classification": "Neutral", "error": str(e)}
+        logger.warning("fear-greed fetch failed: %s", e)
+        return {"value": 50, "classification": "Neutral", "unavailable": True, "reason": "외부 지표 수집 실패"}
 
     # 캐시 저장
     try:
@@ -164,7 +165,11 @@ def _generate_fear_greed_text(data: Dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 def _load_market_regime_analysis() -> Dict[str, Any]:
-    """4-Layer 시장 레짐 분석 로드"""
+    """4-Layer 시장 레짐 분석 로드.
+
+    우선 trade.core.MarketAnalyzer (PG 의존, 내부 monorepo 전용) 시도.
+    실패 시 global_regime_summary.json 기반 fallback — 외부망 차단 환경은
+    trade 모듈/PG 없이도 레짐 데이터 반환 가능."""
     try:
         import sys
         if str(PROJECT_ROOT) not in sys.path:
@@ -186,17 +191,72 @@ def _load_market_regime_analysis() -> Dict[str, Any]:
         return analysis
 
     except ImportError as e:
-        logger.warning(f"MarketAnalyzer not available: {e}")
-        return mcp_error(
-            MCPErrorCode.NO_DATA,
-            "MarketAnalyzer module not available",
-            action=MCPErrorAction.CHECK,
-            regime="Neutral",
-            score=0.5,
-            _llm_summary="[4-Layer 레짐] 모듈 로드 실패, 기본값 사용",
-        )
+        # trade 모듈 없음 — global_regime_summary.json fallback
+        logger.info(f"MarketAnalyzer unavailable, using global_regime_summary.json: {e}")
+        return _load_regime_from_global_summary()
     except Exception as e:
-        logger.error(f"Failed to load market regime analysis: {e}")
+        # MarketAnalyzer 는 있지만 runtime 실패 (PG 연결 등) — 동일 fallback
+        logger.warning(f"MarketAnalyzer runtime failed, using global_regime_summary.json: {e}")
+        return _load_regime_from_global_summary()
+
+
+def _load_regime_from_global_summary() -> Dict[str, Any]:
+    """global_regime_summary.json 으로부터 regime 구조 재구성."""
+    import json as _json
+
+    from oneqaz_trading_mcp.config import GLOBAL_REGIME_SUMMARY_JSON
+
+    try:
+        if not GLOBAL_REGIME_SUMMARY_JSON.exists():
+            return mcp_error(
+                MCPErrorCode.NO_DATA,
+                "global_regime_summary.json not available",
+                action=MCPErrorAction.RETRY,
+                action_value="60",
+                regime="Neutral",
+                score=0.5,
+                _llm_summary="[4-Layer 레짐] summary JSON 부재, 기본값 사용",
+            )
+
+        with open(GLOBAL_REGIME_SUMMARY_JSON, "r", encoding="utf-8") as f:
+            summary = _json.load(f)
+
+        overall = summary.get("overall", {}) or {}
+        categories = summary.get("categories", {}) or {}
+
+        regime = overall.get("regime", "neutral")
+        score = float(overall.get("score", 0.5) or 0.5)
+
+        # "neutral" → "Neutral" 등 capitalize 로 레거시 MarketAnalyzer 포맷과 정합
+        regime_display = str(regime).capitalize() if regime else "Neutral"
+
+        # category 단위 레짐을 details 로 전달 — 4-Layer 의 근사치
+        details = {
+            "source": "global_regime_summary.json",
+            "updated_at": summary.get("updated_at"),
+            "categories": {
+                cat: {
+                    "regime_dominant": info.get("regime_dominant"),
+                    "sentiment_avg": info.get("sentiment_avg"),
+                    "symbols": info.get("symbols"),
+                }
+                for cat, info in categories.items()
+            },
+        }
+
+        analysis = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "score": score,
+            "regime": regime_display,
+            "volatility": 0.0,
+            "raw_score": score,
+            "details": details,
+        }
+        analysis["_llm_summary"] = _generate_regime_analysis_text(analysis)
+        return analysis
+
+    except Exception as e:
+        logger.error(f"Failed to load regime from global summary: {e}")
         return mcp_error(
             MCPErrorCode.NO_DATA,
             f"시장 레짐 분석 로드 실패: {e}",

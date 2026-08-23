@@ -3,7 +3,7 @@
   "name": "io.github.wnsod/oneqaz-trading-mcp",
   "title": "Trading Signal & Market Regime MCP Server",
   "description": "Trading MCP with regime detection + self-verifying Trust Layer. Crypto, US, KR stocks. 24/7 live.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "repository": {
     "url": "https://github.com/oneqaz-trading/oneqaz-trading-mcp",
     "source": "github"
@@ -12,14 +12,32 @@
     {
       "registryType": "pypi",
       "identifier": "oneqaz-trading-mcp",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "transport": {
         "type": "stdio"
       },
       "environmentVariables": [
         {
-          "name": "DATA_ROOT",
-          "description": "Root directory for market data files",
+          "name": "PG_HOST",
+          "description": "PostgreSQL host (OneQAZ-compatible schema; read-only role suffices)",
+          "isRequired": true,
+          "isSecret": false
+        },
+        {
+          "name": "PG_PASSWORD",
+          "description": "PostgreSQL password",
+          "isRequired": true,
+          "isSecret": true
+        },
+        {
+          "name": "PG_USER",
+          "description": "PostgreSQL user (default: auto_trader)",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "PG_DB",
+          "description": "PostgreSQL database (default: auto_trader)",
           "isRequired": false,
           "isSecret": false
         },

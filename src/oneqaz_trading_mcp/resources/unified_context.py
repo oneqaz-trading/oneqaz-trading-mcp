@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sqlite3
 import logging
 import threading
 from datetime import datetime, timezone, timedelta
@@ -162,42 +161,37 @@ GLOBAL_EVENT_IMPACT = {
 
 # ─── DB 유틸 ──────────────────────────────────────────────────────────────
 
-_conn_cache: Dict[str, sqlite3.Connection] = {}
+_conn_cache: Dict[str, object] = {}
 _conn_cache_lock = threading.Lock()
 
 
-def _safe_connect(db_path: Path) -> Optional[sqlite3.Connection]:
-    """DB 커넥션 캐시 — 동일 경로에 대해 재사용 (메모리/성능 개선)."""
-    if not db_path or not db_path.exists():
+def _safe_connect(db_path: Path) -> Optional[Any]:
+    """DB 커넥션 — external_context 는 PG 경유, 그 외 mcps.config.connect_readonly 사용."""
+    if not db_path:
         return None
-    key = str(db_path)
-    with _conn_cache_lock:
-        conn = _conn_cache.get(key)
-        if conn is not None:
-            try:
-                conn.execute("SELECT 1")
-                return conn
-            except Exception:
-                _conn_cache.pop(key, None)
-        try:
-            conn = sqlite3.connect(key, timeout=5, check_same_thread=False)
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=5000")
-            _conn_cache[key] = conn
-            return conn
-        except Exception:
-            return None
+
+    # [Wave I] PG 전용: compat.connect_readonly 가 모든 경로를 PG 스키마로 라우팅
+    try:
+        from oneqaz_trading_mcp.shared.db.compat import connect_readonly
+        return connect_readonly(str(db_path), timeout=5)
+    except Exception:
+        return None
 
 
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+def _table_exists(conn: object, table: str) -> bool:
+    # [2026-04-21] shared.db.compat shim 은 qmark(?) 기대. %s 는 %% 이스케이프되어 placeholder 0개로 파싱됨.
     row = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)
+        """
+        SELECT table_name FROM information_schema.tables
+        WHERE table_name = ?
+        LIMIT 1
+        """,
+        (table,),
     ).fetchone()
     return row is not None
 
 
-def _fetch_rows(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> List[Dict]:
+def _fetch_rows(conn: object, sql: str, params: tuple = ()) -> List[Dict]:
     try:
         return [dict(r) for r in conn.execute(sql, params).fetchall()]
     except Exception:
@@ -210,7 +204,7 @@ def _load_internal_symbol_snapshot(market_id: str, symbol: str) -> Dict[str, Any
     """내부 기술적 데이터: 시그널 DB에서 최신 분석"""
     from oneqaz_trading_mcp.config import get_signal_db_path
     db_path = get_signal_db_path(market_id, symbol)
-    if not db_path or not db_path.exists():
+    if not db_path:  # [2026-07-03] PG 논리 키 — 파일 존재 검사 제거
         return {}
     conn = _safe_connect(db_path)
     if not conn:
@@ -221,7 +215,11 @@ def _load_internal_symbol_snapshot(market_id: str, symbol: str) -> Dict[str, Any
         """)
         return rows[0] if rows else {}
     finally:
-        pass  # conn은 캐시에서 재사용 (close 불필요)
+        # [2026-04-21] PG 풀 반환 필수. close 누락 시 max=20 풀 고갈 → unified hang.
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def _load_external_symbol_snapshot(market_id: str, symbol: str) -> Dict[str, Any]:
@@ -256,7 +254,11 @@ def _load_external_symbol_snapshot(market_id: str, symbol: str) -> Dict[str, Any
             result["fundamentals"] = rows[0] if rows else {}
         return result
     finally:
-        pass  # conn은 캐시에서 재사용 (close 불필요)
+        # [2026-04-21] PG 풀 반환 필수. close 누락 시 max=20 풀 고갈 → unified hang.
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def _merge_symbol_context(market_id: str, symbol: str) -> Dict[str, Any]:
@@ -300,7 +302,11 @@ def _merge_symbol_context(market_id: str, symbol: str) -> Dict[str, Any]:
 def _load_global_events_affecting(market_id: str) -> List[Dict[str, Any]]:
     """모든 외부 컨텍스트 DB에서 market_id에 영향을 주는 글로벌 이벤트 수집"""
     affecting = []
-    news_db = get_external_db_path("news")
+    try:
+        from external_context.core.db_utils import resolve_db_path
+        news_db = resolve_db_path("news", "news_events")
+    except ImportError:
+        news_db = get_external_db_path("news")
     conn = _safe_connect(news_db)
     if conn:
         try:
@@ -321,7 +327,11 @@ def _load_global_events_affecting(market_id: str) -> List[Dict[str, Any]]:
                             })
                             break
         finally:
-            pass  # conn은 캐시에서 재사용 (close 불필요)
+            # [2026-04-21] PG 풀 반환 필수.
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     for cat in ALL_CATEGORIES:
         cat_db = get_external_db_path(cat)
@@ -348,7 +358,11 @@ def _load_global_events_affecting(market_id: str) -> List[Dict[str, Any]]:
                             })
                             break
         finally:
-            pass  # conn 캐시 재사용
+            # [2026-04-21] PG 풀 반환 필수.
+            try:
+                cat_conn.close()
+            except Exception:
+                pass
 
     return affecting
 
@@ -390,7 +404,11 @@ def _load_market_internal_summary(market_id: str) -> Dict[str, Any]:
             pass
         return result
     finally:
-        pass  # conn은 캐시에서 재사용 (close 불필요)
+        # [2026-04-21] PG 풀 반환 필수. close 누락 시 max=20 풀 고갈 → unified hang.
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def _load_market_external_summary(market_id: str) -> Dict[str, Any]:
@@ -432,7 +450,11 @@ def _load_market_external_summary(market_id: str) -> Dict[str, Any]:
 
         return result
     finally:
-        pass  # conn은 캐시에서 재사용 (close 불필요)
+        # [2026-04-21] PG 풀 반환 필수. close 누락 시 max=20 풀 고갈 → unified hang.
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def _build_unified_market_context(market_id: str) -> Dict[str, Any]:
@@ -516,7 +538,9 @@ def _build_unified_llm_summary(
         lines.append("예정 이벤트:")
         for e in upcoming:
             title = (e.get("title") or "")[:50]
-            sched = (e.get("scheduled_at") or "")[:10]
+            raw = e.get("scheduled_at") or ""
+            sched_str = raw.isoformat() if hasattr(raw, "isoformat") else str(raw)
+            sched = sched_str[:10]
             lines.append(f"  - {title} ({sched})")
 
     return "\n".join(lines)
@@ -534,12 +558,16 @@ def _load_regime_directions() -> Dict[str, Dict[str, Any]]:
         if not conn:
             continue
         try:
+            # [2026-07-03] 동결 analysis(04-16 이후 writer 0) → 라이브 candles.
+            # 7일 신선도 하한 — 소스가 죽으면 방향 판정에서 조용히 제외된다.
             rows = _fetch_rows(conn, """
                 SELECT symbol, regime_label, sentiment_label, integrated_direction,
                        regime_stage, volatility_level
-                FROM analysis
+                FROM candles
+                WHERE category = ? AND "interval" = '1d'
+                  AND timestamp >= EXTRACT(EPOCH FROM NOW() - INTERVAL '7 days')
                 ORDER BY timestamp DESC LIMIT 50
-            """)
+            """, (category,))
             seen = set()
             for row in rows:
                 sym = row.get("symbol", "")
@@ -556,7 +584,11 @@ def _load_regime_directions() -> Dict[str, Dict[str, Any]]:
                     "raw_direction": row.get("integrated_direction", ""),
                 }
         finally:
-            pass  # conn은 캐시에서 재사용 (close 불필요)
+            # [2026-04-21] PG 풀 반환 필수.
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     for market_id in ALL_MARKETS:
         db_path = get_market_db_path(market_id)
@@ -578,7 +610,11 @@ def _load_regime_directions() -> Dict[str, Dict[str, Any]]:
                 "regime": status.get("market_regime", "Unknown"),
             }
         finally:
-            pass  # conn은 캐시에서 재사용 (close 불필요)
+            # [2026-04-21] PG 풀 반환 필수.
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     return directions
 
@@ -825,35 +861,38 @@ def _load_agent_history_rag(market_id: str, regime: str = "") -> str:
 
 
 def _load_inference_watchlist(market_id: str) -> List[Dict[str, Any]]:
-    """이벤트 전파 추론 Watchlist 로드"""
-    market_map = {"crypto": "coin_market", "kr_stock": "kr_market", "us_stock": "us_market"}
-    search_markets = ["news"]
-    mapped = market_map.get(market_id)
-    if mapped:
-        search_markets.append(mapped)
+    """이벤트 전파 추론 Watchlist 로드
 
-    items = []
-    for mid in search_markets:
-        db_path = get_external_db_path(mid)
-        conn = _safe_connect(db_path)
-        if not conn:
-            continue
+    [2026-08-20] inference_candidates 는 PG 단일 테이블 — 구 샤드 순회
+    (news + 해당 시장)가 같은 테이블을 2회 조회해 상위 후보가 2배 중복으로
+    합쳐지던 것을 단일 쿼리로 정리. 시장 스코프는 candidate_market 필터로 복원.
+    """
+    market_map = {"crypto": "coin_market", "kr_stock": "kr_market", "us_stock": "us_market"}
+    mapped = market_map.get(market_id)
+
+    conn = _safe_connect(get_external_db_path(mapped or "news"))
+    if not conn:
+        return []
+    try:
+        if not _table_exists(conn, "inference_candidates"):
+            return []
+        market_filter = "AND candidate_market = ?" if mapped else ""
+        params = (mapped,) if mapped else ()
+        return _fetch_rows(conn, f"""
+            SELECT candidate_symbol, candidate_market, source_title,
+                   relation_type, relation_detail, adjusted_confidence,
+                   coverage_penalty, created_at
+            FROM inference_candidates
+            WHERE status = 'watching' {market_filter}
+            ORDER BY adjusted_confidence DESC, created_at DESC
+            LIMIT 5
+        """, params)
+    finally:
+        # [2026-04-21] PG 풀 반환 필수.
         try:
-            if not _table_exists(conn, "inference_candidates"):
-                continue
-            rows = _fetch_rows(conn, """
-                SELECT candidate_symbol, candidate_market, source_title,
-                       relation_type, relation_detail, adjusted_confidence,
-                       coverage_penalty, created_at
-                FROM inference_candidates
-                WHERE status = 'watching'
-                ORDER BY adjusted_confidence DESC, created_at DESC
-                LIMIT 5
-            """)
-            items.extend(rows)
-        finally:
-            pass  # conn은 캐시에서 재사용 (close 불필요)
-    return items[:5]
+            conn.close()
+        except Exception:
+            pass
 
 
 def _load_regime_flow_summary(market_id: str) -> str:
@@ -968,23 +1007,91 @@ def _load_regime_flow_summary(market_id: str) -> str:
     except Exception:
         pass
     finally:
-        pass  # conn은 캐시에서 재사용 (close 불필요)
+        # [2026-04-21] PG 풀 반환 필수. close 누락 시 max=20 풀 고갈 → unified hang.
+        try:
+            conn.close()
+        except Exception:
+            pass
 
     return "\n".join(parts)
 
 
-def _build_full_unified_context(market_id: str) -> Dict[str, Any]:
-    """특정 시장의 전체 통합 컨텍스트 (Level 1+2+3 + Feature Gate + Agent History + Inference)"""
-    market_ctx = _build_unified_market_context(market_id)
-    cross_market = _build_cross_market_context()
+async def _abuild_unified_market_context(market_id: str) -> Dict[str, Any]:
+    """_build_unified_market_context 의 async 버전.
+    내부 3개 로더(internal / external / global_events)를 동시에 실행해 Phase 2 병목 제거.
+    [2026-04-21] Phase 2 sequential → concurrent 전환. DB I/O 대기 겹쳐 체감 2~3배 단축.
+    """
+    internal, external, global_events = await asyncio.gather(
+        asyncio.to_thread(_load_market_internal_summary, market_id),
+        asyncio.to_thread(_load_market_external_summary, market_id),
+        asyncio.to_thread(_load_global_events_affecting, market_id),
+    )
+
+    alert_level = "normal"
+    if len(global_events) >= 3:
+        alert_level = "high"
+    elif len(global_events) >= 1:
+        alert_level = "elevated"
+
+    high_impact = external.get("high_impact_news_count", 0)
+    if high_impact >= 2:
+        alert_level = "high"
+
+    return {
+        "market_id": market_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "internal": internal,
+        "external": external,
+        "global_events_affecting": global_events,
+        "alert_level": alert_level,
+        "_llm_summary": _build_unified_llm_summary(market_id, internal, external, global_events),
+    }
+
+
+async def _abuild_full_unified_context(market_id: str) -> Dict[str, Any]:
+    """_build_full_unified_context 의 async 버전.
+    Group A (independent) 5개를 동시 실행 후 regime 에 의존하는 history_rag 를 순차 호출.
+    [2026-04-21] 실측: warm 캐시 1.57~1.62× 단축(0.43s→0.27s). cold 3시장 동시 요청은
+    PG pool 동시 open 오버헤드로 오히려 약간 느림(1.83s→2.30s). 실제 LLM 사이클은
+    TTL=120s 캐시가 warm path 를 담보하므로 유의미.
+    주 병목은 여전히 LLM 생성(70~90s)이며 본 병렬화는 unified 단일 호출 내부 최적화.
+    """
+    market_ctx, cross_market, feature_gate, inference_watchlist, regime_flow = await asyncio.gather(
+        _abuild_unified_market_context(market_id),
+        asyncio.to_thread(_build_cross_market_context),
+        asyncio.to_thread(_load_feature_gate_summary, market_id),
+        asyncio.to_thread(_load_inference_watchlist, market_id),
+        asyncio.to_thread(_load_regime_flow_summary, market_id),
+    )
 
     current_regime = market_ctx.get("internal", {}).get("regime", "")
 
-    feature_gate = _load_feature_gate_summary(market_id)
-    history_rag = _load_agent_history_rag(market_id, current_regime)
-    inference_watchlist = _load_inference_watchlist(market_id)
-    regime_flow = _load_regime_flow_summary(market_id)
+    # history_rag 만 regime 의존 → Group A 종료 후 단독 호출
+    history_rag = await asyncio.to_thread(_load_agent_history_rag, market_id, current_regime)
 
+    return _finalize_full_unified_context(
+        market_id=market_id,
+        market_ctx=market_ctx,
+        cross_market=cross_market,
+        feature_gate=feature_gate,
+        history_rag=history_rag,
+        inference_watchlist=inference_watchlist,
+        regime_flow=regime_flow,
+    )
+
+
+def _finalize_full_unified_context(
+    *,
+    market_id: str,
+    market_ctx: Dict[str, Any],
+    cross_market: Dict[str, Any],
+    feature_gate: Dict[str, Any],
+    history_rag: str,
+    inference_watchlist: List[Dict[str, Any]],
+    regime_flow: str,
+) -> Dict[str, Any]:
+    """수집된 컴포넌트들을 최종 unified_context 페이로드로 조립.
+    sync/async 양쪽 경로에서 공유. 순수 함수(I/O 없음)."""
     full_summary_parts = []
     if market_ctx.get("_llm_summary"):
         full_summary_parts.append(market_ctx["_llm_summary"])
@@ -1071,6 +1178,27 @@ def _build_full_unified_context(market_id: str) -> Dict[str, Any]:
     )
 
 
+def _build_full_unified_context(market_id: str) -> Dict[str, Any]:
+    """sync 호환 wrapper. 외부 sync 호출자(없어야 정상) 보호용.
+    [2026-04-21] 리소스 핸들러는 async 경로(_abuild_full_unified_context)를 사용."""
+    market_ctx = _build_unified_market_context(market_id)
+    cross_market = _build_cross_market_context()
+    current_regime = market_ctx.get("internal", {}).get("regime", "")
+    feature_gate = _load_feature_gate_summary(market_id)
+    history_rag = _load_agent_history_rag(market_id, current_regime)
+    inference_watchlist = _load_inference_watchlist(market_id)
+    regime_flow = _load_regime_flow_summary(market_id)
+    return _finalize_full_unified_context(
+        market_id=market_id,
+        market_ctx=market_ctx,
+        cross_market=cross_market,
+        feature_gate=feature_gate,
+        history_rag=history_rag,
+        inference_watchlist=inference_watchlist,
+        regime_flow=regime_flow,
+    )
+
+
 # ─── Resource 등록 ────────────────────────────────────────────────────────
 
 def _ai_summary_unified(data: dict) -> str:
@@ -1097,7 +1225,9 @@ def register_unified_context_resources(mcp, cache):
         cached = cache.get(cache_key, ttl=CACHE_TTL_UNIFIED)
         if cached:
             return to_resource_text(cached)
-        data = await asyncio.to_thread(_build_full_unified_context, market_id)
+        # [2026-04-21] sequential asyncio.to_thread → gather 기반 병렬로 전환.
+        # 내부 6~7개 DB I/O 를 동시에 돌려 Phase 2 체감 2~3배 단축.
+        data = await _abuild_full_unified_context(market_id)
         if not data.get("error"):
             data = wrap_with_ai_summary(data, "unified_context", _ai_summary_unified)
         cache.set(cache_key, data)

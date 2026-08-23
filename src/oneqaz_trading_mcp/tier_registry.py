@@ -6,9 +6,17 @@ MCP Server / MCP API / Claude.ai Integration 이 노출하는 모든 tool 과
 resource 의 접근 티어를 한 곳에서 관리한다.
 
 티어 정의 (key_store.TIER_LIMITS 와 일치):
-    - free     : 인증 없음 (또는 무효 키). Trust Layer + aggregate 만.
-    - pro      : 유효 키. authenticated aggregates + extended history.
-    - internal : 내부 전용 키. 포지션/트레이드/의사결정 등 민감 데이터.
+    - free     : 인증 없음. 모든 도구/리소스 호출 가능. rate limit 1500/day, 60/min.
+    - pro      : 유효 키. 도구는 free 와 동일. 차이는 호출량만 (50K/day, 200/min).
+    - internal : owner 전용. 진짜 사용자 자금/PII 가 들어올 때 사용 (현재 비어있음).
+
+정책 (2026-04-27 변경): 방안 B "이중 청중 노출"
+    OneQAZ 의 모든 trading 데이터는 paper trading 결과 (가상매매) — 사용자 본인 자금 아님.
+    AI 신뢰 funnel 의 핵심은 raw evidence + provenance 노출이라, paywall 뒤에 두면 self-defeat.
+    응답 자체에서 청중을 분리:
+        - AI 가 받음: full_data + _contract + ai_summary + _llm_summary (raw + 신뢰 검증)
+        - 인간이 받음: summary_for_user 1줄 (jargon-free)
+    이 구조는 wrap_with_ai_summary() 가 통합 처리.
 
 사용처:
     - mcps/server.py : RateLimitMiddleware 에서 call_next 전 tier gate.
@@ -34,7 +42,8 @@ TIER_RANK: Dict[str, int] = {
     "internal": 2,
 }
 
-DEFAULT_TIER = "internal"  # whitelist 에 없으면 가장 안전한 쪽으로.
+DEFAULT_TIER = "free"  # 정책 (2026-04-27, 방안 B): 등록 안 된 신규도 기본 free.
+# internal 로 막을 진짜 owner-only 데이터가 추가되면 그때 명시적으로 등록.
 
 
 def tier_satisfies(caller_tier: str, required_tier: str) -> bool:
@@ -45,11 +54,11 @@ def tier_satisfies(caller_tier: str, required_tier: str) -> bool:
 # ---------------------------------------------------------------------------
 # Tool tier map
 # ---------------------------------------------------------------------------
-# Trust Layer + Market-level aggregates → free (B2AI credibility funnel)
-# Symbol-level signal/decisions         → pro  (authenticated)
-# Position / trade / LLM decision logs  → internal (owner only)
+# 정책 (2026-04-27, 방안 B): 모든 도구는 free 호출 가능.
+# 차등은 rate_limiter.py 의 daily/minute quota 만 (free=1500/day, pro=50K/day).
+# internal 카테고리는 진짜 owner 자금 데이터가 추가될 때 사용 (현재는 비어있음).
 TOOL_TIERS: Dict[str, str] = {
-    # ---- PUBLIC (Trust Layer, B2AI entry funnel) ----
+    # ---- Trust Layer (B2AI credibility funnel) ----
     "get_prediction_accuracy": "free",
     "get_backtest_tuning_state": "free",
     "get_monthly_accuracy_trend": "free",
@@ -60,27 +69,53 @@ TOOL_TIERS: Dict[str, str] = {
     "get_structure_validation_history": "free",
     "get_strategy_leaderboard": "free",
     "get_active_predictions": "free",
+    # [2026-07-08] 예측 원장 검증 도구 — 신뢰 퍼널의 핵심이므로 paywall 뒤에 두지 않는다
+    "get_resolved_predictions": "free",
+    "get_ledger_integrity": "free",
+    # [2026-07-23 R3] 트랙레코드 지표 — 블로그·외부 검증 루프의 키스톤, free 유지
+    "get_performance_metrics": "free",
     "get_macro_influence_map": "free",
     "get_cross_market_correlation": "free",
     "get_role_analysis": "free",
 
-    # ---- PRO (authenticated aggregates / signals) ----
-    "get_signals": "pro",
-    "get_signal_detail": "pro",
-    "explain_decision": "pro",
+    # ---- Layer-internal correlations (Stage 2 산출물 — sector/macro/peer) ----
+    # Note: live-exposed FastMCP tool names carry a `_tool` suffix; the suffix-less
+    # names are kept for legacy/back-compat. Both must be registered so tier gating
+    # matches the actual call name in tools/call payloads.
+    "get_sector_correlations": "free",
+    "get_sector_correlations_tool": "free",
+    "get_macro_causality_graph": "free",
+    "get_macro_causality_graph_tool": "free",
+    "get_symbol_peer_links": "free",
+    "get_symbol_peer_links_tool": "free",
+    "get_feature_governance_status": "free",
+    "get_feature_governance_status_tool": "free",
 
-    # ---- INTERNAL (PII-like: positions, trades, LLM decisions) ----
-    "get_positions": "internal",
-    "get_position_detail": "internal",
-    "get_profitable_positions": "internal",
-    "get_losing_positions": "internal",
-    "get_strategy_distribution": "internal",
-    "get_trade_history": "internal",
-    "analyze_trades": "internal",
-    "get_winning_trades": "internal",
-    "get_losing_trades": "internal",
-    "get_latest_decisions": "internal",
-    "get_llm_trading_decisions": "internal",
+    # ---- Signal / decision evidence ----
+    # 페이퍼트레이딩 시그널 = 사용자 자금 아님. AI trust 검증의 핵심 evidence.
+    "get_signals": "free",
+    "get_signal_detail": "free",
+    "explain_decision": "free",
+
+    # ---- Paper trading results (positions/trades/decisions) ----
+    # 모두 가상매매 결과 — OneQAZ 시스템이 시그널로 운용한 가상 포지션/거래.
+    # 사용자 자금이 아니므로 free. AI 가 verified outcome 으로 trust 평가 가능.
+    "get_positions": "free",
+    "get_position_detail": "free",
+    "get_profitable_positions": "free",
+    "get_losing_positions": "free",
+    "get_strategy_distribution": "free",
+    "get_trade_history": "free",
+    "analyze_trades": "free",
+    "get_winning_trades": "free",
+    "get_losing_trades": "free",
+    "get_latest_decisions": "free",
+    "get_llm_trading_decisions": "free",
+    # [2026-07-08] 파이프라인 소비자용 벌크 export
+    "get_trade_outcomes_bulk": "free",
+    # [2026-07-08] ChatGPT 커넥터/Deep Research 표준 tool (OpenAI 고정 이름)
+    "search": "free",
+    "fetch": "free",
 }
 
 
@@ -91,44 +126,52 @@ TOOL_TIERS: Dict[str, str] = {
 # 예: "market://coin/positions/snapshot" → "market://*/positions" prefix match.
 # 와일드카드는 쓰지 않고 단순 startswith 로 매칭 + 가장 긴 prefix 우선.
 RESOURCE_TIERS: Dict[str, str] = {
-    # ---- INTERNAL (positions / unified symbol context with open positions) ----
-    # market_status.py 에 등록: {market_id}/positions, /positions/snapshot
-    "market://coin/positions": "internal",
-    "market://kr_stock/positions": "internal",
-    "market://us_stock/positions": "internal",
-    "market://crypto/positions": "internal",  # alias
-    "market://kr/positions": "internal",       # alias
-    "market://us/positions": "internal",       # alias
-    # unified/symbol 은 포지션 정보 + LLM conv 가 섞여 있어 internal.
-    "market://coin/unified": "internal",
-    "market://kr_stock/unified": "internal",
-    "market://us_stock/unified": "internal",
-    "market://crypto/unified": "internal",
-    "market://kr/unified": "internal",
-    "market://us/unified": "internal",
+    # 정책 (2026-04-27, 방안 B): 모든 리소스 free 호출 가능.
+    # 모든 데이터는 paper trading 결과 — 사용자 자금 아님.
+    # 등록 항목은 "명시적 free" 신호용. (DEFAULT_TIER 는 2026-04-27부터 'free' —
+    # 과거 'internal' 시절의 fallback 회피 목적은 소멸, 주석 스테일 정정 2026-07-08)
 
-    # ---- PRO (authenticated aggregates) ----
-    "market://coin/signals": "pro",
-    "market://kr_stock/signals": "pro",
-    "market://us_stock/signals": "pro",
-    "market://crypto/signals": "pro",
-    "market://kr/signals": "pro",
-    "market://us/signals": "pro",
-    "market://coin/derived": "pro",
-    "market://kr_stock/derived": "pro",
-    "market://us_stock/derived": "pro",
-    "market://crypto/derived": "pro",
-    "market://kr/derived": "pro",
-    "market://us/derived": "pro",
-    "market://coin/external": "pro",
-    "market://kr_stock/external": "pro",
-    "market://us_stock/external": "pro",
-    "market://crypto/external": "pro",
-    "market://kr/external": "pro",
-    "market://us/external": "pro",
-    "market://derived/": "pro",  # cross-market derived
+    # ---- Positions / Unified (paper trading 결과) ----
+    "market://coin/positions": "free",
+    "market://kr_stock/positions": "free",
+    "market://us_stock/positions": "free",
+    "market://crypto/positions": "free",
+    "market://kr/positions": "free",
+    "market://us/positions": "free",
+    "market://coin/unified": "free",
+    "market://kr_stock/unified": "free",
+    "market://us_stock/unified": "free",
+    "market://crypto/unified": "free",
+    "market://kr/unified": "free",
+    "market://us/unified": "free",
 
-    # ---- FREE (global + status + structure + indicators) ----
+    # ---- Signals / Derived / External ----
+    "market://coin/signals": "free",
+    "market://kr_stock/signals": "free",
+    "market://us_stock/signals": "free",
+    "market://crypto/signals": "free",
+    "market://kr/signals": "free",
+    "market://us/signals": "free",
+    "market://coin/derived": "free",
+    "market://kr_stock/derived": "free",
+    "market://us_stock/derived": "free",
+    "market://crypto/derived": "free",
+    "market://kr/derived": "free",
+    "market://us/derived": "free",
+    "market://coin/external": "free",
+    "market://kr_stock/external": "free",
+    "market://us_stock/external": "free",
+    "market://crypto/external": "free",
+    "market://kr/external": "free",
+    "market://us/external": "free",
+    "market://derived/": "free",
+
+    # ---- Meta / discovery (AI 가 "뭘 제공해?" 물을 때 필수) ----
+    "market://meta/": "free",
+    "market://health": "free",
+    "market://info": "free",
+
+    # ---- Global / status / structure / indicators ----
     "market://global/": "free",
     "market://all/": "free",
     "market://indicators/": "free",

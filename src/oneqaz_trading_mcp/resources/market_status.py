@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import asyncio
-import sqlite3
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -23,6 +22,7 @@ from oneqaz_trading_mcp.config import (
     MARKET_DB_PATHS,
     CACHE_TTL_MARKET_STATUS,
     get_market_db_path,
+    connect_readonly,
 )
 from oneqaz_trading_mcp.resources.resource_response import (
     build_resource_explanation,
@@ -53,6 +53,19 @@ def _ai_summary_status(data: dict) -> str:
     market_id = data.get("market_id", "")
     return f"{market_id} 시장: 레짐={regime}, 포지션 {total}개(이익 {profitable}개, avg {avg_pnl:.1f}%), 승률 {win_rate:.1f}%, 24h {trades_24h}건."
 
+
+def _user_summary_status(data: dict) -> str:
+    """인간 사용자에게 보여줄 1줄 (jargon-free, 한국어)."""
+    market_id = data.get("market_id", "")
+    market_label = {"crypto": "암호화폐", "kr_stock": "한국 주식", "us_stock": "미국 주식"}.get(market_id, market_id)
+    pos = data.get("positions_summary", {})
+    total = pos.get("total", 0)
+    profitable = pos.get("profitable", 0)
+    if total == 0:
+        return f"{market_label} 시장에 현재 진행 중인 포지션이 없습니다."
+    win_pct = round(profitable / total * 100) if total else 0
+    return f"{market_label} 시장에서 현재 {total}개 종목을 가상 운용 중이며, 그 중 {profitable}개({win_pct}%)가 이익 상태입니다."
+
 # ---------------------------------------------------------------------------
 # 데이터 로더 함수
 # ---------------------------------------------------------------------------
@@ -61,7 +74,7 @@ def _load_market_status(market_id: str) -> Dict[str, Any]:
     """시장 상태 로드 (포지션 요약, 성과, 레짐)"""
     db_path = get_market_db_path(market_id)
 
-    if not db_path or not db_path.exists():
+    if not db_path:  # [2026-07-03] PG 논리 키 — 파일 존재 검사 제거 (레거시 파일 삭제 시 DB_NOT_FOUND 오탐 함정)
         return mcp_error(
             MCPErrorCode.DB_NOT_FOUND,
             f"Trading DB not found for market: {market_id}",
@@ -72,12 +85,11 @@ def _load_market_status(market_id: str) -> Dict[str, Any]:
         )
 
     try:
-        with sqlite3.connect(str(db_path)) as conn:
-            conn.row_factory = sqlite3.Row
+        # Read-only URI: writer(virtual_trade_executor)와 lock contention 없이 동시 read
+        with connect_readonly(db_path) as conn:
 
             result = {
                 "market_id": market_id,
-                "db_path": str(db_path),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
 
@@ -90,7 +102,8 @@ def _load_market_status(market_id: str) -> Dict[str, Any]:
                 result["scanning_coins"] = system_status.get("scanning_coins", "")
                 result["thinking_log"] = system_status.get("thinking_log", "")
             except Exception as e:
-                result["system_status"] = {"error": str(e)}
+                logger.warning("system_status load failed for %s: %s", market_id, e)
+                result["system_status"] = {"unavailable": True, "reason": "데이터 수집 중"}
                 result["market_regime"] = "Unknown"
                 result["thinking_log"] = ""
 
@@ -131,7 +144,8 @@ def _load_market_status(market_id: str) -> Dict[str, Any]:
                         "min_pnl": round(row["min_pnl"] or 0, 2),
                     }
             except Exception as e:
-                result["positions_summary"] = {"error": str(e)}
+                logger.warning("positions_summary load failed for %s: %s", market_id, e)
+                result["positions_summary"] = {"unavailable": True, "reason": "데이터 수집 중"}
 
             # 3. 성과 통계 (최신)
             try:
@@ -152,7 +166,8 @@ def _load_market_status(market_id: str) -> Dict[str, Any]:
                         "active_positions": row["active_positions"],
                     }
             except Exception as e:
-                result["performance"] = {"error": str(e)}
+                logger.warning("performance load failed for %s: %s", market_id, e)
+                result["performance"] = {"unavailable": True, "reason": "데이터 수집 중"}
 
             # 4. 최근 거래 요약 (24시간)
             try:
@@ -174,7 +189,8 @@ def _load_market_status(market_id: str) -> Dict[str, Any]:
                         "avg_pnl": round(row["avg_pnl_24h"] or 0, 2),
                     }
             except Exception as e:
-                result["recent_24h"] = {"error": str(e)}
+                logger.warning("recent_24h load failed for %s: %s", market_id, e)
+                result["recent_24h"] = {"unavailable": True, "reason": "데이터 수집 중"}
 
             # LLM용 요약 텍스트
             result["_llm_summary"] = _generate_market_status_text(market_id, result)
@@ -251,7 +267,7 @@ def _load_positions_snapshot(market_id: str, limit: int = 10) -> Dict[str, Any]:
     """현재 포지션 스냅샷"""
     db_path = get_market_db_path(market_id)
 
-    if not db_path or not db_path.exists():
+    if not db_path:  # [2026-07-03] PG 논리 키 — 파일 존재 검사 제거 (레거시 파일 삭제 시 DB_NOT_FOUND 오탐 함정)
         return mcp_error(
             MCPErrorCode.DB_NOT_FOUND,
             f"DB not found for market: {market_id}",
@@ -262,8 +278,8 @@ def _load_positions_snapshot(market_id: str, limit: int = 10) -> Dict[str, Any]:
         )
 
     try:
-        with sqlite3.connect(str(db_path)) as conn:
-            conn.row_factory = sqlite3.Row
+        # Read-only URI: writer(virtual_trade_executor)와 lock contention 없이 동시 read
+        with connect_readonly(db_path) as conn:
 
             # virtual_positions는 symbol 컬럼 사용 (coin 없을 수 있음)
             cursor = conn.execute("""
@@ -354,7 +370,18 @@ def register_market_status_resources(mcp, cache):
 
         data = await asyncio.to_thread(_load_market_status, market_id)
         if not data.get("error"):
-            data = wrap_with_ai_summary(data, "market_status", _ai_summary_status)
+            data = wrap_with_ai_summary(data, "market_status", _ai_summary_status, _user_summary_status)
+        cache.set(cache_key, data)
+        return to_resource_text(data)
+
+    async def _positions_snapshot_impl(market_id: str):
+        cache_key = f"positions_snapshot_{market_id}"
+        cached = cache.get(cache_key, ttl=CACHE_TTL_MARKET_STATUS)
+        if cached:
+            logger.debug(f"Cache hit: {cache_key}")
+            return to_resource_text(cached)
+
+        data = await asyncio.to_thread(_load_positions_snapshot, market_id)
         cache.set(cache_key, data)
         return to_resource_text(data)
 
@@ -371,15 +398,14 @@ def register_market_status_resources(mcp, cache):
         Args:
             market_id: Market ID (crypto, kr_stock, us_stock)
         """
-        cache_key = f"positions_snapshot_{market_id}"
-        cached = cache.get(cache_key, ttl=CACHE_TTL_MARKET_STATUS)
-        if cached:
-            logger.debug(f"Cache hit: {cache_key}")
-            return to_resource_text(cached)
+        return await _positions_snapshot_impl(market_id)
 
-        data = await asyncio.to_thread(_load_positions_snapshot, market_id)
-        cache.set(cache_key, data)
-        return to_resource_text(data)
+    @mcp.resource("market://{market_id}/positions")
+    async def get_positions_alias(market_id: str) -> Dict[str, Any]:
+        """
+        [역할] `market://{market_id}/positions/snapshot` 의 별칭. 외부 가이드에서 더 자연스러운 URI.
+        """
+        return await _positions_snapshot_impl(market_id)
 
     @mcp.resource("market://all/summary")
     async def get_all_markets_summary() -> Dict[str, Any]:

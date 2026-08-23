@@ -50,8 +50,14 @@ def main():
         run_server()
 
     elif args.command == "init":
-        from oneqaz_trading_mcp.init_db import init_databases
-        init_databases()
+        print(
+            "DEPRECATED (0.4.0): the SQLite demo backend was retired when this\n"
+            "package became a faithful mirror of the production server, which is\n"
+            "PostgreSQL-only. Self-hosting now requires a OneQAZ-compatible\n"
+            "PostgreSQL (see README > Self-hosting). For evaluation, use the\n"
+            "hosted endpoint instead: https://api.oneqaz.com/mcp"
+        )
+        sys.exit(1)
 
     elif args.command == "check":
         from oneqaz_trading_mcp.config import check_paths

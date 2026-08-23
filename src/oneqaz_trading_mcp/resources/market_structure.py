@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sqlite3
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -25,6 +24,7 @@ from oneqaz_trading_mcp.config import (
     ANALYSIS_DB_PATHS,
     get_structure_summary_path,
     get_analysis_db_path,
+    connect_readonly,
 )
 from oneqaz_trading_mcp.resources.resource_response import to_resource_text, mcp_error, MCPErrorCode, MCPErrorAction, wrap_with_ai_summary
 
@@ -102,11 +102,11 @@ def _generate_structure_summary_text(data: Dict[str, Any]) -> str:
 def _load_group_analysis(market_id: str, limit: int = 50) -> List[Dict[str, Any]]:
     key = f"{market_id.replace('_stock', '_structure').replace('crypto', 'coin_structure')}"
     db_path = get_analysis_db_path(key)
-    if not db_path or not db_path.exists():
+    if not db_path:  # [2026-07-03] PG 논리 키 — 파일 존재 검사 제거
         return []
     try:
-        with sqlite3.connect(str(db_path), timeout=10) as conn:
-            conn.row_factory = sqlite3.Row
+        # Read-only URI: analysis pipeline writer와 lock contention 없이 동시 read
+        with connect_readonly(db_path, timeout=10) as conn:
             rows = conn.execute(
                 """SELECT symbol, interval, timestamp,
                           regime_stage, regime_label, sentiment, sentiment_label,

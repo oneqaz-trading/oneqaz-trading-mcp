@@ -7,9 +7,7 @@ COPY src/ src/
 
 RUN pip install --no-cache-dir .
 
-# Initialize sample data
-RUN oneqaz-trading-mcp init
-
+# PostgreSQL-only since 0.4.0: pass DB_BACKEND=postgres + PG_* env at runtime
 EXPOSE 8010
 
 CMD ["oneqaz-trading-mcp", "serve"]
