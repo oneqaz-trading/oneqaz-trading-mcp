@@ -10,14 +10,16 @@
 >
 > Your AI agent shouldn't just see prices — it should be able to *prove* the
 > signals it's acting on have worked, and know what to ask next. OneQAZ ships
-> 32 tools across 8 categories: 13 Trust Layer tools (verified hit rates,
-> calibration, governance, lead time), 4 cross-asset correlation tools
-> (sector / macro / peer), 9 paper-trading evidence tools, and a high-frequency
-> `get_daily_brief` for one-call market overviews. Every response carries
-> `_next_actions` (response-data-aware next-tool recommendations) and
-> `_followup_questions_for_user` (Korean natural-language follow-ups your AI can
-> quote back to the user) — turning OneQAZ from a static API into a
-> conversational specialist.
+> 39 tools across 9 categories: 13 Trust Layer tools (verified hit rates,
+> calibration, governance, lead time), a tamper-evident prediction ledger
+> (`get_ledger_integrity` — SHA-256 hash-chain over every timestamped
+> judgment), 4 cross-asset correlation tools (sector / macro / peer),
+> portfolio analytics (MDD / Sharpe / Sortino / Calmar), paper-trading
+> evidence tools, and a high-frequency `get_daily_brief` for one-call market
+> overviews. Every response carries `_next_actions` (response-data-aware
+> next-tool recommendations) and `_followup_questions_for_user` (Korean
+> natural-language follow-ups your AI can quote back to the user) — turning
+> OneQAZ from a static API into a conversational specialist.
 >
 > Crypto, US stocks, Korean stocks. 1,100+ symbols. 24/7 live.
 
@@ -96,18 +98,31 @@ Real-time data updated every minute. Trust Layer + public endpoints accessible w
 Try one of:
 - *"Call `get_daily_brief` and summarize the market for me."* — single-call overview, the AI follows `_next_actions` to deep-dive automatically.
 - *"Call `get_prediction_accuracy` and tell me whether to trust OneQAZ."* — Trust Layer entry point, returns sample-count-weighted hit rates.
-- *"Read `market://meta/discovery` first, then plan."* — dynamic catalog of all 32 tools / 17 resources / 17 templates with `data_freshness` probe.
+- *"Read `market://meta/discovery` first, then plan."* — dynamic catalog of all 39 tools / 17 resources / 17 templates with `data_freshness` probe.
 
-### Option 2: Local (for development & testing)
+### Option 2: Self-host (source transparency)
+
+Since 0.4.0 this package is a **faithful mirror of the production server** —
+the exact code serving `api.oneqaz.com/mcp`, synced from the OneQAZ monorepo
+by `scripts/sync_from_monorepo.py`. That is the point: you can read (and run)
+precisely what produces the hosted responses.
 
 ```bash
 pip install oneqaz-trading-mcp
-oneqaz-trading-mcp init    # creates sample SQLite databases
+# point it at a OneQAZ-compatible PostgreSQL (TimescaleDB) instance:
+export DB_BACKEND=postgres PG_HOST=... PG_PORT=5432 PG_DB=auto_trader PG_USER=... PG_PASSWORD=...
 oneqaz-trading-mcp serve   # starts at http://localhost:8010
 ```
 
 - MCP endpoint: `http://localhost:8010/mcp`
-- Local mode uses demo data. For live Trust Layer + signals, use the [Live API](#option-1-live-api--no-install-needed).
+- The server is PostgreSQL-only (the prior SQLite demo backend was retired in
+  0.4.0 — `oneqaz-trading-mcp init` now just prints a deprecation notice).
+  Without OneQAZ's live database the tools return structured, actionable
+  errors rather than data — for evaluation, use the
+  [Live API](#option-1-live-api--no-install-needed).
+- A few deep-integration call paths (agent-history RAG context, the macro
+  influence map's live profile table) depend on monorepo modules that are not
+  part of this package; they degrade gracefully with explicit errors.
 
 Then connect from any MCP client:
 
@@ -127,7 +142,7 @@ Then connect from any MCP client:
 
 | Tier | Auth | Daily quota | Burst | Notes |
 |------|------|-------------|-------|-------|
-| **free** | none / invalid key | 1,500 / day | 60 / min | All 32 tools + 17 resources + 17 templates |
+| **free** | none / invalid key | 1,500 / day | 60 / min | All 39 tools + 17 resources + 17 templates |
 | **pro** | valid API key | 50,000 / day | 200 / min | Same surface, higher volume — for bots / schedulers |
 | **internal** | owner-only | unlimited | unlimited | Reserved for real user-fund tools (currently empty) |
 
@@ -213,13 +228,40 @@ OneQAZ doesn't just return data; it tells your AI **what to ask next**.
 
 Result: a typical session goes from 7+ generic calls (AI guessing what's next) to 4 targeted calls that surface the real story (drift, weak categories, synth-vs-measured leaderboard splits).
 
-## Tools (32 total — all free tier)
+## Tools (39 total — all free tier)
 
 ### High-frequency entry — `get_daily_brief` (1 tool)
 
 | Tool | Returns |
 |------|---------|
 | `get_daily_brief` | Single-call market overview: macro regime + top 5 strong signals + yesterday's paper-trading P&L + active prediction count + Korean narrative. The natural first call for "what's the market doing today?" |
+
+### Verifiable prediction ledger (3 tools) — new in 0.4.0
+
+| Tool | Returns |
+|------|---------|
+| `get_ledger_integrity` | Tamper-evidence for the prediction ledger: a daily SHA-256 hash chain over all created/resolved prediction rows, with the exact canonical recipe published so any third party can recompute and verify. The strongest trust primitive OneQAZ offers — judgments are chained *before* outcomes are known. |
+| `get_resolved_predictions` | Raw row-level prediction ledger: every macro regime prediction's full lifecycle (`created_at` → `resolved_at` → outcome) — audit the evidence judgment by judgment. |
+| `get_trade_outcomes_bulk` | Cursor-paginated bulk export of the prediction → trade → outcome chain (paper trades with realized P&L, linked to the preceding signal prediction) — compute your own hit rates instead of trusting ours. |
+
+### Portfolio analytics (1 tool) — new in 0.4.0
+
+| Tool | Returns |
+|------|---------|
+| `get_performance_metrics` | Portfolio-level MDD / Sharpe / Sortino / Calmar / win-rate per market and account type (`paper` / `live`), optional daily equity curve. |
+
+### Signal calibration (1 tool) — new in 0.4.0
+
+| Tool | Returns |
+|------|---------|
+| `get_signal_calibration` | Reliability diagram data for signal confidence: realized hit rate per confidence bucket with ECE summary — verify whether a 0.9-confidence signal actually hits ~90%. |
+
+### ChatGPT connector standard (2 tools) — new in 0.4.0
+
+| Tool | Returns |
+|------|---------|
+| `search` | ChatGPT-connector-standard discovery search over OneQAZ's live surface — tools, resources, and the latest strong signals across all three markets. Result ids are consumable by `fetch`. |
+| `fetch` | Connector-standard fetch of a single result by id returned from `search`. |
 
 ### Trust Layer (13 tools)
 
@@ -363,41 +405,32 @@ All configuration is via environment variables:
 | `MCP_SERVER_PORT` | `8010` | Server port |
 | `MCP_SERVER_HOST` | `0.0.0.0` | Bind host |
 | `MCP_LOG_LEVEL` | `INFO` | Log level |
-| `MCP_TIER_RESOLVER` | _unset_ | `module:function` returning tier for an API key |
-| `MCP_ANALYTICS_DB` | `<pkg>/data_storage/mcp_analytics.db` | Per-request audit log (SQLite) |
-| `DATA_ROOT` | Auto-detect | Root directory for all data |
-| `MCP_COIN_DATA_DIR` | `{DATA_ROOT}/market/coin_market/data_storage` | Crypto data directory |
-| `MCP_KR_DATA_DIR` | `{DATA_ROOT}/market/kr_market/data_storage` | KR stock data directory |
-| `MCP_US_DATA_DIR` | `{DATA_ROOT}/market/us_market/data_storage` | US stock data directory |
-| `MCP_EXTERNAL_CONTEXT_DATA_DIR` | `{DATA_ROOT}/external_context/data_storage` | External context directory |
-| `MCP_GLOBAL_REGIME_DATA_DIR` | `{DATA_ROOT}/market/global_regime/data_storage` | Global regime directory |
+| `MCP_TIER_RESOLVER` | _unset_ | `module:function` returning tier for an API key (self-host hook) |
+| `DB_BACKEND` | `postgres` | Must be `postgres` (SQLite backend retired in 0.4.0) |
+| `PG_HOST` / `PG_PORT` | `postgres` / `5432` | PostgreSQL host / port |
+| `PG_DB` / `PG_USER` / `PG_PASSWORD` | `auto_trader` / … | PostgreSQL database / credentials (a read-only role is enough) |
+| `PG_POOL_MIN` / `PG_POOL_MAX` | `0` / `50` | Per-schema connection pool bounds |
+| `PG_STATEMENT_TIMEOUT_MS` | `30000` | Server-side statement timeout |
+| `MCP_COIN_DATA_DIR` / `MCP_KR_DATA_DIR` / `MCP_US_DATA_DIR` | auto | Override *logical* data-path roots (see below) |
+| `MCP_EXTERNAL_CONTEXT_DATA_DIR` | auto | Override external-context logical root |
 
 ## Docker
 
 ```bash
 docker build -t oneqaz-trading-mcp .
-docker run -p 8010:8010 oneqaz-trading-mcp
+docker run -p 8010:8010 -e DB_BACKEND=postgres -e PG_HOST=... -e PG_PASSWORD=... oneqaz-trading-mcp
 ```
 
-## Data Directory Structure
+## Data backend (PostgreSQL)
 
-```
-{DATA_ROOT}/
-├── market/
-│   ├── global_regime/data_storage/
-│   │   ├── global_regime_summary.json
-│   │   └── {bonds,commodities,forex,vix,...}_analysis.db
-│   ├── coin_market/data_storage/
-│   │   ├── trading_system.db
-│   │   ├── signals/{symbol}_signal.db
-│   │   └── regime/market_structure_summary.json
-│   ├── kr_market/data_storage/  (same structure)
-│   └── us_market/data_storage/  (same structure)
-└── external_context/data_storage/
-    ├── coin_market/external_context.db
-    ├── kr_market/external_context.db
-    └── us_market/external_context.db
-```
+All data lives in **PostgreSQL 16 + TimescaleDB**, one schema per domain
+(`market_coin` / `market_kr` / `market_us`, `market_*_struct`,
+`external_context`, `rl_pipeline`, `mcp_analytics`, …). The code still
+constructs legacy SQLite-style paths (`.../coin_market/data_storage/trading_system.db`)
+but these are **logical routing keys only**: `connect_readonly()` maps each
+path to its PG schema and returns a shim connection, so no `.db` files are
+read or written. This mirrors the production Wave-I "PG-only" migration —
+queries fail loudly instead of silently falling back.
 
 ## Rate Limits
 

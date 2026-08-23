@@ -4,7 +4,47 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.4.0] - 2026-08-23
+
+### Changed — the package is now a faithful production mirror
+
+- **Source policy**: `src/oneqaz_trading_mcp/` is now synced 1:1 from the
+  OneQAZ monorepo's `mcps/` module — the exact code serving
+  `api.oneqaz.com/mcp` — by `scripts/sync_from_monorepo.py` (import prefixes
+  rewritten, one public-only patch: the `MCP_TIER_RESOLVER` hook). The
+  previous curated fork (English-translated docstrings, SQLite demo backend)
+  is retired: it made every sync a manual porting project, which is how this
+  repo froze between April and August 2026 while the hosted surface kept
+  evolving.
+- **BREAKING — PostgreSQL-only**: the local SQLite demo backend is gone.
+  Self-hosting requires a OneQAZ-compatible PostgreSQL (`DB_BACKEND=postgres`
+  + `PG_*` env vars; a read-only role suffices). `oneqaz-trading-mcp init`
+  now prints a deprecation notice and exits. Note: no working install is
+  broken by this — PyPI 0.2.0 could not run at all (`from mcps.*` import bug,
+  see 0.3.0 notes), and 0.3.0 was never uploaded.
+- New dependency: `psycopg[binary,pool]>=3.1`.
+- Removed dead public-only modules: `init_db.py`, `cache.py`, `response.py`.
+
+### Added — hosted-surface catch-up (tool count 32 → 39)
+
+- **Verifiable prediction ledger (3)** — `get_ledger_integrity` (daily
+  SHA-256 hash chain over all created/resolved prediction rows, canonical
+  recipe published for third-party recomputation), `get_resolved_predictions`
+  (row-level created→resolved→outcome lifecycle), `get_trade_outcomes_bulk`
+  (cursor-paginated prediction→trade→outcome export).
+- **Portfolio analytics (1)** — `get_performance_metrics` (MDD / Sharpe /
+  Sortino / Calmar per market + account type, optional daily curve).
+- **Signal calibration (1)** — `get_signal_calibration` (reliability diagram
+  per confidence bucket + ECE).
+- **ChatGPT connector standard (2)** — `search` + `fetch`.
+- Plus four months of production fixes to the existing 32 tools (universe
+  PG routing, latency fixes, confidence_calibrated surfacing, honest-metric
+  revisions POLICY 08-11/08-12/08-18/08-20, structured actionable errors).
+- Smoke-verified from a clean venv install: 39 tools / 17 static resources /
+  17 templates register, and live PG calls return real data
+  (`get_positions`, `get_ledger_integrity`, `get_performance_metrics`).
+
+## [0.3.1-unreleased] - 2026-05-08 (docs only, folded into 0.4.0)
 
 ### Added — Specialist Positioning Layer (2026-05-07/08)
 
