@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.1] - 2026-10-06
+
+### Security
+
+- Removed a hard-coded PostgreSQL password default from
+  `oneqaz_trading_mcp/shared/db/config.py`. The 0.4.0 monorepo sync copied it
+  verbatim. The password now comes only from the `PG_PASSWORD` environment
+  variable. When it is unset, the connection fails at authentication instead of
+  silently using a built-in value.
+- The credential embedded in 0.4.0 was revoked on the OneQAZ side, and 0.4.0 is
+  yanked on PyPI. No other code changes: 0.4.1 is 0.4.0 plus this fix.
+
 ## [0.4.0] - 2026-08-23
 
 ### Changed — the package is now a faithful production mirror

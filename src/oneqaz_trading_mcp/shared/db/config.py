@@ -46,7 +46,10 @@ class DBConfig:
     pg_port: int = 5432
     pg_db: str = "auto_trader"
     pg_user: str = "auto_trader"
-    pg_password: str = "auto_trader_dev"
+    # [2026-10-06] 비밀번호 리터럴 기본값 제거 — 이 기본값이 공개 패키지(oneqaz-trading-mcp 0.4.0)로
+    #   그대로 복사돼 슈퍼유저 비밀번호가 유출됐다. 값은 env PG_PASSWORD 가 유일한 출처이고,
+    #   미설정이면 빈 값으로 접속을 시도해 인증 단계에서 실패한다(조용히 맞는 값으로 붙지 않는다).
+    pg_password: str = ""
 
     # 커넥션 풀
     # pg_pool_min=0: idle 연결 영구 점유 방지 (2026-04-19 PgBouncer 제거 후).
@@ -93,7 +96,7 @@ def load_config() -> DBConfig:
         pg_port=int(os.getenv("PG_PORT", "5432")),
         pg_db=os.getenv("PG_DB", "auto_trader"),
         pg_user=os.getenv("PG_USER", "auto_trader"),
-        pg_password=os.getenv("PG_PASSWORD", "auto_trader_dev"),
+        pg_password=os.getenv("PG_PASSWORD", ""),
         pg_pool_min=int(os.getenv("PG_POOL_MIN", "0")),
         pg_pool_max=int(os.getenv("PG_POOL_MAX", "50")),
         pg_statement_timeout_ms=int(os.getenv("PG_STATEMENT_TIMEOUT_MS", "30000")),
