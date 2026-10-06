@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.2] - 2026-10-07
+
+### Changed — privacy policy
+
+- The policy served at `/privacy` (and published at <https://api.oneqaz.com/privacy>) is updated:
+  - **Retention is now explicit.** IP addresses and IP-derived session keys are kept for up to
+    12 months, then irreversibly replaced. The previous text ("retained only as long as needed, then
+    aggregated or deleted") did not describe an actual deletion process.
+  - **Newly disclosed fields** on the hosted service: a one-way API-key fingerprint and the resolved
+    tier, HTTP status and JSON-RPC error codes, result-shape metadata (rows returned / total available
+    / truncated / empty), the MCP protocol version, the `Accept` header, and request payload size.
+    The `search` keyword (≤ 60 characters) is now named explicitly instead of being implied by
+    "whitelisted parameters".
+  - The previous "API key — used only to determine your tier" wording is corrected: usage is also
+    attributed per key via the fingerprint (never the key itself).
+
+### Added
+
+- `PRIVACY.md` — mirror of the hosted policy plus self-hosting notes: no telemetry to OneQAZ, the two
+  outbound calls the server makes, request logs go to your own PostgreSQL, and the bundled `/privacy`
+  route describes OneQAZ's hosted service (replace it for your own deployment).
+
+No other code changes: 0.4.2 is 0.4.1 plus the updated policy page.
+
 ## [0.4.1] - 2026-10-06
 
 ### Security

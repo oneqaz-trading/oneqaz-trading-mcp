@@ -579,7 +579,7 @@ padding:.1rem .4rem;font-size:.85em;color:#c49b6f}ul{margin:0 0 1rem 1.3rem}li{m
 <h1>Privacy Policy</h1>
 <div class="sub">OneQAZ Trading Intelligence &mdash; MCP Server &amp; API</div>
 <div class="ko">OneQAZ &mdash; MCP &amp; API</div>
-<div class="meta">Last updated: 2026-07-08 &middot; Effective: 2026-07-08</div>
+<div class="meta">Last updated: 2026-10-07 &middot; Effective: 2026-10-07</div>
 <p>OneQAZ provides a research-information service exposing live market intelligence (crypto, Korean
 stocks, US stocks) to AI clients over the Model Context Protocol (MCP) and an HTTP API. This policy
 explains what data we process when you (or an AI client acting on your behalf) connect to
@@ -591,31 +591,56 @@ or accept financial transactions.</div>
 <p>We do <strong>not</strong> require user accounts; we do not collect names, emails, or payment
 details. For each request we log:</p>
 <ul>
-<li><strong>IP address</strong> &mdash; rate limiting, abuse prevention, regional routing.</li>
+<li><strong>IP address</strong> &mdash; rate limiting, abuse prevention, regional routing. For requests
+routed through Cloudflare this is the client address Cloudflare reports.</li>
 <li><strong>User-agent</strong> &mdash; to identify client type (Claude, ChatGPT, Gemini, etc.).</li>
 <li><strong>Requested tool/resource name</strong> and request type (e.g. <code>get_daily_brief</code>).</li>
-<li><strong>Outcome metadata</strong> &mdash; success/failure, latency (ms), error codes.</li>
-<li><strong>Derived session key</strong> &mdash; a hash of IP + user-agent + a 30-minute bucket; no persistent identifier is stored.</li>
-<li><strong>API key (if provided)</strong> &mdash; used only to determine your rate-limit tier and access level.</li>
+<li><strong>Outcome metadata</strong> &mdash; success/failure, HTTP status, JSON-RPC error code, a short
+error description (at most 200 characters; input values echoed back by validation errors are
+redacted), latency (ms), and the shape of the result (rows returned, total available, whether it
+was truncated or empty).</li>
+<li><strong>Derived session key</strong> &mdash; a hash of IP + user-agent + a 30-minute bucket. No
+cookie or other persistent identifier is set on your client.</li>
+<li><strong>API key (if provided)</strong> &mdash; used to determine your rate-limit tier and access
+level. With each request we record the resolved tier and a one-way fingerprint of the key (the first
+16 hex characters of its SHA-256 hash) so usage can be attributed per key. The key itself is never
+written to request logs.</li>
 <li><strong>Whitelisted request parameters</strong> &mdash; a limited summary of tool arguments
-(e.g. <code>symbol</code>, <code>market</code>, <code>interval</code>, date ranges) to understand
-aggregate demand. Free-form argument content outside this whitelist is <strong>not</strong> stored.</li>
-<li><strong>MCP client metadata</strong> &mdash; the client name/version your MCP client sends at
-<code>initialize</code> (<code>clientInfo</code>), the protocol session id header, the call order
-within a session, and the response payload size.</li>
+(e.g. <code>symbol</code>, <code>market</code>, <code>interval</code>, <code>category</code>, date
+ranges, result limits, identifiers) and, for the <code>search</code> tool, the search keyword
+truncated to 60 characters, to understand aggregate demand. Calls made without arguments are recorded
+as such. Argument content outside this whitelist is <strong>not</strong> stored.</li>
+<li><strong>MCP client &amp; protocol metadata</strong> &mdash; the client name/version your MCP client
+sends at <code>initialize</code> (<code>clientInfo</code>), the MCP protocol version (from the
+<code>MCP-Protocol-Version</code> header or the <code>initialize</code> request), the
+<code>Accept</code> header (first 200 characters), the protocol session id header if your client
+sends one, the call order within a session, and the request and response payload sizes.</li>
 <li><strong>Traffic classification</strong> &mdash; a derived label (crawler / operator-self-test /
 external) used to keep aggregate usage statistics honest.</li>
 </ul>
+<p>We do not store the contents of responses we send you.</p>
 <h2>2. How we use it</h2>
 <ul>
 <li>Operate and secure the service (rate limiting, abuse prevention, debugging).</li>
+<li>Diagnose client and protocol compatibility problems.</li>
 <li>Measure aggregate usage to improve the product.</li>
-<li>Enforce access tiers for API-key holders.</li>
+<li>Enforce access tiers and attribute usage to API keys.</li>
 </ul>
 <p>We do <strong>not</strong> sell your data or build advertising profiles.</p>
 <h2>3. Storage &amp; retention</h2>
-<p>Request logs are stored on infrastructure operated by OneQAZ, retained only as long as needed for
-security and analytics, then aggregated or deleted.</p>
+<p>Request logs are stored on infrastructure operated by OneQAZ, including internal analytics
+copies.</p>
+<ul>
+<li><strong>IP addresses</strong>, and the session key derived from them, are kept for up to
+<strong>12 months</strong>. After that they are irreversibly replaced using a one-way transformation
+whose random key is discarded after each run, so the remaining records can no longer be linked to an
+IP address.</li>
+<li>The rest of each request record (tool name, whitelisted parameters, outcome, client and protocol
+metadata) is kept as usage history. Once the IP-derived fields are replaced it no longer identifies
+you, except that requests made with an API key remain attributable to that key.</li>
+<li>If you were issued an API key, the contact email attached to it is kept while the key is issued
+to you. You can ask us to delete it at any time.</li>
+</ul>
 <h2>4. Third-party sharing</h2>
 <p>We do not share request data with third parties for their own purposes. Network traffic is routed
 through Cloudflare (CDN / DDoS protection) as a data processor. Returned market data is derived from
@@ -626,7 +651,8 @@ through that client's platform. Every response carries <code>disclaimer</code>,
 <code>is_investment_advice=false</code>, and <code>data_classification=research_information_only</code>.</p>
 <h2>6. Your choices</h2>
 <p>Because we do not maintain user accounts, the simplest way to stop data processing is to stop
-calling the service. For questions about data associated with your IP or API key, contact us below.</p>
+calling the service. For questions or requests (including deletion) about data associated with your
+IP address or API key, contact us below.</p>
 <h2>7. Changes</h2>
 <p>We may update this policy; material changes are reflected by the "Last updated" date above.</p>
 <h2>8. Contact</h2>

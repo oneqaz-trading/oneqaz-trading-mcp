@@ -450,6 +450,17 @@ Authoritative quotas live in [Access Policy](#access-policy) above. Quick recap:
 - `X-RateLimit-Minute-Remaining`: requests left this minute
 - Exceeding limits returns HTTP 429 with `Retry-After` header.
 
+## Privacy
+
+- **Hosted service** (`api.oneqaz.com`): the authoritative policy is <https://api.oneqaz.com/privacy>.
+  In short — no accounts; per-request metadata (IP, user-agent, tool name, outcome, whitelisted
+  arguments, client/protocol metadata, API-key fingerprint) is logged; **IP addresses and IP-derived
+  session keys are irreversibly replaced after 12 months**; data is never sold.
+- **Self-hosting**: the package sends no telemetry to OneQAZ, and request logs go to *your* PostgreSQL.
+  Replace the bundled `/privacy` page with your own notice if you expose your deployment.
+
+Details: [PRIVACY.md](PRIVACY.md).
+
 ## Disclaimer
 
 This software is provided for **informational and educational purposes only**. It is **not financial advice**.
