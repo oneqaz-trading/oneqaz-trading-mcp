@@ -3,7 +3,7 @@
   "name": "io.github.wnsod/oneqaz-trading-mcp",
   "title": "Trading Signal & Market Regime MCP Server",
   "description": "Trading MCP with regime detection + self-verifying Trust Layer. Crypto, US, KR stocks. 24/7 live.",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "repository": {
     "url": "https://github.com/oneqaz-trading/oneqaz-trading-mcp",
     "source": "github"
@@ -12,7 +12,7 @@
     {
       "registryType": "pypi",
       "identifier": "oneqaz-trading-mcp",
-      "version": "0.4.2",
+      "version": "0.4.3",
       "transport": {
         "type": "stdio"
       },

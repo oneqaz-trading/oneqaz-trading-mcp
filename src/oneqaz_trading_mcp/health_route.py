@@ -554,112 +554,443 @@ def register_health_routes(mcp) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Privacy Policy HTML — oneqaz.com/privacy 와 동일 내용. self-contained.
-# 수집 항목은 mcps/analytics.py log_request() 실측 기준.
+# Privacy Policy HTML — landing/privacy.html(oneqaz.com/privacy)과 **바이트 동일**한 단일 원본.
+# [2026-10-07] 사이트 테마·EN/KO 토글을 공유하도록 재작성. 링크·로고는 절대주소라 어느 도메인에서도 동작.
+# ⛔ 한쪽만 고치지 말 것 — landing 파일을 고친 뒤 이 상수에 그대로 붙인다(백슬래시·삼중따옴표 금지).
+# 수집 항목은 mcps/analytics.py log_request() 실측 기준 · 보존 약속(§3)의 이행 = scripts/mcp_requests_ip_retention.py
 # ---------------------------------------------------------------------------
 
 _PRIVACY_HTML = """<!DOCTYPE html>
-<html lang="en"><head>
+<html lang="en" data-lang="en" data-theme="dark">
+<head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Privacy Policy — OneQAZ Trading Intelligence</title>
+<title>Privacy Policy — OneQAZ</title>
+<meta name="description" content="OneQAZ MCP / API privacy policy — what we collect, how we use it, retention, and contact. 개인정보 처리방침.">
 <meta name="robots" content="index,follow">
+<link rel="canonical" href="https://oneqaz.com/privacy">
+<link rel="icon" href="https://oneqaz.com/images/logo.png" type="image/png">
+<link rel="preconnect" href="https://fonts.bunny.net">
+<link href="https://fonts.bunny.net/css?family=outfit:300,400,500,600,700|noto-sans-kr:300,400,500,700" rel="stylesheet">
+<!--
+  ONE SOURCE, TWO URLS — this exact file is served at https://oneqaz.com/privacy (landing repo)
+  and https://api.oneqaz.com/privacy (monorepo mcps/health_route.py::_PRIVACY_HTML, mirrored into
+  the public package). Keep them byte-identical: links and assets are absolute for that reason.
+  No backslashes and no triple quotes anywhere — the MCP copy lives inside a Python string.
+-->
 <style>
-body{background:#1c1c24;color:#e8e4df;font-family:'Outfit','Noto Sans KR',system-ui,sans-serif;
-line-height:1.7;max-width:820px;margin:0 auto;padding:4rem 1.5rem 6rem}
-a{color:#d4a853;text-decoration:none}a:hover{text-decoration:underline}
-h1{font-size:2rem;margin-bottom:.3rem}h2{color:#d4a853;font-size:1.2rem;margin:2.2rem 0 .7rem;
-border-bottom:1px solid #3a3a4a;padding-bottom:.4rem}
-.sub{color:#8a8680;margin-bottom:.3rem}.meta{color:#c49b6f;font-size:.85rem;margin-bottom:2rem;font-weight:500}
-.ko{color:#8a8680;font-size:.92rem}code{background:#2a2a36;border:1px solid #3a3a4a;border-radius:4px;
-padding:.1rem .4rem;font-size:.85em;color:#c49b6f}ul{margin:0 0 1rem 1.3rem}li{margin-bottom:.5rem}
-.note{background:#252530;border-left:3px solid #d4a853;padding:1rem 1.2rem;border-radius:4px;margin:1.2rem 0;font-size:.95rem}
-</style></head><body>
-<a href="https://oneqaz.com" style="color:#8a8680;font-size:.9rem">&larr; OneQAZ</a>
-<h1>Privacy Policy</h1>
-<div class="sub">OneQAZ Trading Intelligence &mdash; MCP Server &amp; API</div>
-<div class="ko">OneQAZ &mdash; MCP &amp; API</div>
-<div class="meta">Last updated: 2026-10-07 &middot; Effective: 2026-10-07</div>
-<p>OneQAZ provides a research-information service exposing live market intelligence (crypto, Korean
-stocks, US stocks) to AI clients over the Model Context Protocol (MCP) and an HTTP API. This policy
-explains what data we process when you (or an AI client acting on your behalf) connect to
-<code>api.oneqaz.com</code>.</p>
-<div class="note"><strong>Not investment advice.</strong> OneQAZ outputs are paper-trading research
-signals, not recommendations to buy or sell. We do <strong>not</strong> execute trades, hold funds,
-or accept financial transactions.</div>
-<h2>1. What we collect</h2>
-<p>We do <strong>not</strong> require user accounts; we do not collect names, emails, or payment
-details. For each request we log:</p>
-<ul>
-<li><strong>IP address</strong> &mdash; rate limiting, abuse prevention, regional routing. For requests
-routed through Cloudflare this is the client address Cloudflare reports.</li>
-<li><strong>User-agent</strong> &mdash; to identify client type (Claude, ChatGPT, Gemini, etc.).</li>
-<li><strong>Requested tool/resource name</strong> and request type (e.g. <code>get_daily_brief</code>).</li>
-<li><strong>Outcome metadata</strong> &mdash; success/failure, HTTP status, JSON-RPC error code, a short
-error description (at most 200 characters; input values echoed back by validation errors are
-redacted), latency (ms), and the shape of the result (rows returned, total available, whether it
-was truncated or empty).</li>
-<li><strong>Derived session key</strong> &mdash; a hash of IP + user-agent + a 30-minute bucket. No
-cookie or other persistent identifier is set on your client.</li>
-<li><strong>API key (if provided)</strong> &mdash; used to determine your rate-limit tier and access
-level. With each request we record the resolved tier and a one-way fingerprint of the key (the first
-16 hex characters of its SHA-256 hash) so usage can be attributed per key. The key itself is never
-written to request logs.</li>
-<li><strong>Whitelisted request parameters</strong> &mdash; a limited summary of tool arguments
-(e.g. <code>symbol</code>, <code>market</code>, <code>interval</code>, <code>category</code>, date
-ranges, result limits, identifiers) and, for the <code>search</code> tool, the search keyword
-truncated to 60 characters, to understand aggregate demand. Calls made without arguments are recorded
-as such. Argument content outside this whitelist is <strong>not</strong> stored.</li>
-<li><strong>MCP client &amp; protocol metadata</strong> &mdash; the client name/version your MCP client
-sends at <code>initialize</code> (<code>clientInfo</code>), the MCP protocol version (from the
-<code>MCP-Protocol-Version</code> header or the <code>initialize</code> request), the
-<code>Accept</code> header (first 200 characters), the protocol session id header if your client
-sends one, the call order within a session, and the request and response payload sizes.</li>
-<li><strong>Traffic classification</strong> &mdash; a derived label (crawler / operator-self-test /
-external) used to keep aggregate usage statistics honest.</li>
-</ul>
-<p>We do not store the contents of responses we send you.</p>
-<h2>2. How we use it</h2>
-<ul>
-<li>Operate and secure the service (rate limiting, abuse prevention, debugging).</li>
-<li>Diagnose client and protocol compatibility problems.</li>
-<li>Measure aggregate usage to improve the product.</li>
-<li>Enforce access tiers and attribute usage to API keys.</li>
-</ul>
-<p>We do <strong>not</strong> sell your data or build advertising profiles.</p>
-<h2>3. Storage &amp; retention</h2>
-<p>Request logs are stored on infrastructure operated by OneQAZ, including internal analytics
-copies.</p>
-<ul>
-<li><strong>IP addresses</strong>, and the session key derived from them, are kept for up to
-<strong>12 months</strong>. After that they are irreversibly replaced using a one-way transformation
-whose random key is discarded after each run, so the remaining records can no longer be linked to an
-IP address.</li>
-<li>The rest of each request record (tool name, whitelisted parameters, outcome, client and protocol
-metadata) is kept as usage history. Once the IP-derived fields are replaced it no longer identifies
-you, except that requests made with an API key remain attributable to that key.</li>
-<li>If you were issued an API key, the contact email attached to it is kept while the key is issued
-to you. You can ask us to delete it at any time.</li>
-</ul>
-<h2>4. Third-party sharing</h2>
-<p>We do not share request data with third parties for their own purposes. Network traffic is routed
-through Cloudflare (CDN / DDoS protection) as a data processor. Returned market data is derived from
-public market sources and our own analysis.</p>
-<h2>5. AI client disclosure</h2>
-<p>When an AI client (Claude, ChatGPT, Gemini) calls OneQAZ on your behalf, your request reaches us
-through that client's platform. Every response carries <code>disclaimer</code>,
-<code>is_investment_advice=false</code>, and <code>data_classification=research_information_only</code>.</p>
-<h2>6. Your choices</h2>
-<p>Because we do not maintain user accounts, the simplest way to stop data processing is to stop
-calling the service. For questions or requests (including deletion) about data associated with your
-IP address or API key, contact us below.</p>
-<h2>7. Changes</h2>
-<p>We may update this policy; material changes are reflected by the "Last updated" date above.</p>
-<h2>8. Contact</h2>
-<p>Questions about this policy or your data: <a href="mailto:contact@oneqaz.com">contact@oneqaz.com</a></p>
-<p class="ko" style="font-size:.85rem;margin-top:2.5rem;border-top:1px solid #3a3a4a;padding-top:1.5rem">
-&copy; 2026 OneQAZ &middot; <a href="https://oneqaz.com">oneqaz.com</a></p>
-</body></html>"""
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+:root,[data-theme="dark"]{
+  --bg:#1c1c24;--panel-bg:#252530;--card-bg:#2a2a36;
+  --text:#e8e4df;--text-muted:#8a8680;
+  --amber:#d4a853;--green:#5cb85c;--red:#d9534f;--blue:#6b9fc9;--gold:#c49b6f;
+  --border:#3a3a4a;--hover:rgba(255,255,255,0.02);
+  --font:'Outfit','Noto Sans KR',sans-serif;
+  --scrollbar-thumb:rgba(255,255,255,0.1);
+  --nav-bg:rgba(28,28,36,0.9);
+}
+[data-theme="light"]{
+  --bg:#e8e4de;--panel-bg:#f2efe9;--card-bg:#ece9e3;
+  --text:#3a3632;--text-muted:#7a756e;
+  --amber:#9e7520;--green:#2d7a3a;--red:#b03225;--blue:#4272a0;--gold:#8c6a38;
+  --border:#cdc7bc;--hover:rgba(0,0,0,0.03);
+  --scrollbar-thumb:rgba(0,0,0,0.15);
+  --nav-bg:rgba(242,239,233,0.9);
+}
+html{scroll-behavior:smooth;font-size:16px}
+body{background:var(--bg);color:var(--text);font-family:var(--font);line-height:1.6;overflow-x:hidden}
+::selection{background:var(--amber);color:var(--bg)}
+body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.06) 2px,rgba(0,0,0,0.06) 4px);transition:opacity .4s}
+[data-theme="light"] body::after{opacity:0.3}
+body::before{
+  content:'';position:fixed;inset:-10%;pointer-events:none;z-index:9998;
+  background:radial-gradient(ellipse at center,transparent 55%,rgba(0,0,0,0.18) 100%);
+  clip-path:polygon(50% 0%,93.3% 25%,93.3% 75%,50% 100%,6.7% 75%,6.7% 25%);
+  transition:opacity .4s;
+}
+[data-theme="light"] body::before{opacity:0.08}
+::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--scrollbar-thumb);border-radius:2px}
+
+/* Language: both languages ship in the HTML (crawlable); the toggle hides one. */
+[data-lang="en"] [data-l="ko"],[data-lang="ko"] [data-l="en"]{display:none !important}
+
+.version-tag{position:fixed;top:12px;left:16px;z-index:100;display:block}
+.version-logo{width:28px;height:28px;filter:drop-shadow(0 0 6px rgba(212,168,83,0.3));opacity:.8;transition:opacity .2s}
+.version-logo:hover{opacity:1}
+.progress-bar{position:fixed;top:0;left:0;width:100%;height:2px;z-index:1000;background:var(--panel-bg)}
+.progress-bar .fill{height:100%;width:0;background:linear-gradient(90deg,var(--amber),var(--gold));transition:width .3s}
+
+nav{position:fixed;top:0;right:0;z-index:100;padding:16px 24px;display:flex;gap:20px;align-items:center;font-size:12px;transition:background-color .3s}
+/* Document page: once scrolled, give the nav the same frosted bar the home page uses on mobile so body text never runs under it. */
+nav.scrolled{left:0;justify-content:flex-end;background:var(--nav-bg);backdrop-filter:blur(8px)}
+nav a{color:var(--text-muted);text-decoration:none;letter-spacing:1.5px;transition:color .2s;text-transform:uppercase;font-weight:500}
+nav a:hover{color:var(--amber)}
+nav a.nav-cta{border:1px solid var(--amber);color:var(--amber);padding:5px 12px;border-radius:6px;font-weight:600;transition:background .2s,box-shadow .2s,color .2s}
+nav a.nav-cta:hover{background:rgba(212,168,83,0.1);box-shadow:0 0 12px rgba(212,168,83,0.15);color:var(--amber)}
+.lang-toggle{display:flex;border:1px solid var(--border);border-radius:6px;overflow:hidden;margin-left:4px}
+.lang-toggle button{background:transparent;border:none;color:var(--text-muted);padding:4px 10px;font-size:11px;font-weight:600;letter-spacing:1px;cursor:pointer;font-family:var(--font);transition:all .2s}
+.lang-toggle button.active{background:var(--amber);color:var(--bg)}
+
+.container{max-width:1080px;width:100%;margin:0 auto;padding:0 40px}
+.doc{max-width:820px;padding:128px 0 72px}
+.section-label{font-size:11px;color:var(--amber);letter-spacing:3px;text-transform:uppercase;margin-bottom:8px;font-weight:600;opacity:.8}
+.section-title{font-size:clamp(28px,4vw,40px);font-weight:700;margin-bottom:14px;color:var(--text);line-height:1.25}
+.section-desc{font-size:14px;color:var(--text-muted);max-width:720px;line-height:1.9;margin-bottom:10px;font-weight:300}
+.doc-meta{font-size:12px;color:var(--gold);letter-spacing:1px;font-weight:500;margin-bottom:28px}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 40px}
+.toc a{font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);border:1px solid var(--border);border-radius:6px;padding:4px 10px;text-decoration:none;font-weight:500;transition:color .2s,border-color .2s}
+.toc a:hover{color:var(--amber);border-color:var(--amber)}
+
+.lead{font-size:15px;line-height:1.9;font-weight:300;color:var(--text);margin-bottom:20px}
+.note{background:var(--panel-bg);border:1px solid var(--border);border-left:3px solid var(--amber);border-radius:10px;padding:16px 20px;font-size:14px;line-height:1.85;font-weight:300;margin:0 0 44px}
+.note strong{color:var(--amber)}
+
+.policy section{scroll-margin-top:84px;margin-bottom:44px}
+.policy h2{display:flex;align-items:baseline;gap:12px;font-size:20px;font-weight:600;color:var(--text);margin-bottom:16px;padding-bottom:10px;border-bottom:1px solid var(--border)}
+.policy h2 .num{font-size:11px;color:var(--amber);letter-spacing:2px;font-weight:600;flex-shrink:0}
+.policy p{font-size:15px;line-height:1.9;color:var(--text);font-weight:300;margin-bottom:14px}
+.policy ul{list-style:none;margin:0 0 14px}
+.policy ul li{position:relative;padding-left:20px;font-size:15px;line-height:1.85;font-weight:300;margin-bottom:10px}
+.policy ul li::before{content:'';position:absolute;left:3px;top:.72em;width:6px;height:6px;border-radius:50%;background:var(--amber);opacity:.8}
+.policy strong{font-weight:600}
+.policy a,.doc-foot a{color:var(--amber);text-decoration:none}
+.policy a:hover,.doc-foot a:hover{text-decoration:underline}
+.fields{border:1px solid var(--border);border-radius:12px;background:var(--panel-bg);overflow:hidden;margin:4px 0 16px}
+.field{display:grid;grid-template-columns:210px 1fr;gap:18px;padding:14px 20px}
+.field+.field{border-top:1px solid var(--border)}
+.field dt{font-size:13px;font-weight:600;color:var(--amber);letter-spacing:.3px;line-height:1.7}
+.field dd{font-size:14px;line-height:1.8;color:var(--text);font-weight:300}
+code{background:var(--card-bg);border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:.85em;color:var(--gold);word-break:break-word}
+.doc-foot{font-size:12px;color:var(--text-muted);line-height:1.8;border-top:1px solid var(--border);padding-top:20px;margin-top:8px}
+
+footer{padding:60px 0 40px;border-top:1px solid var(--border);text-align:center}
+.footer-links{display:flex;justify-content:center;gap:28px;margin-bottom:24px;flex-wrap:wrap}
+.footer-links a{color:var(--text-muted);text-decoration:none;font-size:12px;letter-spacing:1px;transition:color .2s;font-weight:500}
+.footer-links a:hover,.footer-links a.current{color:var(--amber)}
+.footer-copy{font-size:11px;color:#4a4a5a;margin-bottom:16px}
+
+[data-theme="light"] .version-logo{filter:brightness(0.3) drop-shadow(0 0 4px rgba(158,117,32,0.2))}
+[data-theme="light"] .fields,[data-theme="light"] .note{box-shadow:0 1px 4px rgba(0,0,0,0.05)}
+body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4s}
+
+@media(max-width:768px){
+  nav{padding:8px 10px;gap:8px;justify-content:flex-end;background:var(--nav-bg);backdrop-filter:blur(8px);width:100%;left:0;right:0}
+  nav a{font-size:9px;letter-spacing:.5px}
+  nav a.nav-cta{padding:4px 8px}
+  .version-tag{top:10px;left:10px}
+  .version-logo{width:22px;height:22px}
+  .lang-toggle button{padding:3px 8px;font-size:10px}
+  .container{padding:0 16px}
+  .doc{padding:88px 0 48px}
+  .field{grid-template-columns:1fr;gap:4px;padding:12px 14px}
+  .policy p,.policy ul li{font-size:14px}
+  .footer-links{gap:16px}
+}
+</style>
+<script>
+(function () {
+  var root = document.documentElement;
+  try {
+    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) root.setAttribute('data-theme', 'light');
+  } catch (e) {}
+  var m = location.search.match(/[?&]lang=(en|ko)/);
+  var saved = null;
+  try { saved = localStorage.getItem('oqz-lang'); } catch (e) {}
+  var lang = (m && m[1]) || (saved === 'ko' || saved === 'en' ? saved : 'en');
+  root.setAttribute('data-lang', lang);
+  root.lang = lang;
+})();
+</script>
+</head>
+<body>
+
+<div class="progress-bar"><div class="fill" id="progressFill"></div></div>
+<a class="version-tag" href="https://oneqaz.com/" aria-label="OneQAZ home"><img src="https://oneqaz.com/images/logo.png" alt="OneQAZ" class="version-logo"></a>
+
+<nav>
+  <a href="https://oneqaz.com/">OneQAZ</a>
+  <a href="https://blog.oneqaz.com/en/" target="_blank" rel="noopener" class="nav-cta" data-blog-path=""><span data-l="en">Daily Reads ↗</span><span data-l="ko">데일리 리포트 ↗</span></a>
+  <div class="lang-toggle">
+    <button id="langEn" type="button" onclick="setLang('en')">EN</button>
+    <button id="langKo" type="button" onclick="setLang('ko')">KO</button>
+  </div>
+</nav>
+
+<main class="container">
+<div class="doc">
+
+<!-- ═══════════════════════════ EN ═══════════════════════════ -->
+<article data-l="en" lang="en">
+  <div class="section-label">Legal</div>
+  <h1 class="section-title">Privacy Policy</h1>
+  <p class="section-desc">OneQAZ Trading Intelligence — MCP Server &amp; API</p>
+  <div class="doc-meta">Last updated 2026-10-07 · Effective 2026-10-07</div>
+
+  <div class="toc">
+    <a href="#en-collect">Collect</a><a href="#en-use">Use</a><a href="#en-retention">Retention</a>
+    <a href="#en-sharing">Sharing</a><a href="#en-ai">AI clients</a><a href="#en-choices">Choices</a>
+    <a href="#en-changes">Changes</a><a href="#en-contact">Contact</a>
+  </div>
+
+  <p class="lead">OneQAZ provides a research-information service that exposes live market intelligence
+  (crypto, Korean stocks, US stocks) to AI clients over the Model Context Protocol (MCP) and an HTTP API.
+  This policy explains what data we process when you (or an AI client acting on your behalf) connect to
+  <code>api.oneqaz.com</code>.</p>
+
+  <div class="note"><strong>Not investment advice.</strong> OneQAZ outputs are paper-trading research signals,
+  not recommendations to buy or sell. We do not execute trades, hold funds, or accept financial transactions.</div>
+
+  <div class="policy">
+    <section id="en-collect">
+      <h2><span class="num">01</span>What we collect</h2>
+      <p>We do <strong>not</strong> require user accounts, and we do not collect names, emails, or payment details
+      from callers. For each request we log:</p>
+      <dl class="fields">
+        <div class="field"><dt>IP address</dt><dd>Rate limiting, abuse prevention, and regional routing. For requests
+        routed through Cloudflare this is the client address Cloudflare reports.</dd></div>
+        <div class="field"><dt>User-agent</dt><dd>To identify the client type (Claude, ChatGPT, Gemini, etc.).</dd></div>
+        <div class="field"><dt>Tool / resource name</dt><dd>The requested tool or resource and the request type
+        (e.g. <code>get_daily_brief</code>).</dd></div>
+        <div class="field"><dt>Outcome metadata</dt><dd>Success/failure, HTTP status, JSON-RPC error code, a short error
+        description (at most 200 characters; input values echoed back by validation errors are redacted), latency (ms),
+        and the shape of the result (rows returned, total available, whether it was truncated or empty).</dd></div>
+        <div class="field"><dt>Derived session key</dt><dd>A hash of IP + user-agent + a 30-minute time bucket. No cookie
+        or other persistent identifier is set on your client.</dd></div>
+        <div class="field"><dt>API key (if provided)</dt><dd>Used to determine your rate-limit tier and access level. With
+        each request we record the resolved tier and a one-way fingerprint of the key (the first 16 hex characters of its
+        SHA-256 hash) so usage can be attributed per key. The key itself is never written to request logs.</dd></div>
+        <div class="field"><dt>Whitelisted request parameters</dt><dd>A limited summary of tool arguments (e.g.
+        <code>symbol</code>, <code>market</code>, <code>interval</code>, <code>category</code>, date ranges, result limits,
+        identifiers) and, for the <code>search</code> tool, the search keyword truncated to 60 characters. Calls made without
+        arguments are recorded as such. Argument content outside this whitelist is <strong>not</strong> stored.</dd></div>
+        <div class="field"><dt>MCP client &amp; protocol metadata</dt><dd>The client name/version sent at
+        <code>initialize</code> (<code>clientInfo</code>), the MCP protocol version (<code>MCP-Protocol-Version</code> header
+        or the <code>initialize</code> request), the <code>Accept</code> header (first 200 characters), the protocol session
+        id header if your client sends one, the call order within a session, and request/response payload sizes.</dd></div>
+        <div class="field"><dt>Traffic classification</dt><dd>A derived label (crawler / operator-self-test / external)
+        used to keep aggregate usage statistics honest.</dd></div>
+      </dl>
+      <p>We do not store the contents of responses we send you.</p>
+    </section>
+
+    <section id="en-use">
+      <h2><span class="num">02</span>How we use it</h2>
+      <ul>
+        <li>Operate and secure the service (rate limiting, abuse prevention, debugging).</li>
+        <li>Diagnose client and protocol compatibility problems.</li>
+        <li>Measure aggregate usage (which tools are called, by which client type) to improve the product.</li>
+        <li>Enforce access tiers and attribute usage to API keys.</li>
+      </ul>
+      <p>We do <strong>not</strong> sell your data, and we do not use it to build advertising profiles.</p>
+    </section>
+
+    <section id="en-retention">
+      <h2><span class="num">03</span>Storage &amp; retention</h2>
+      <p>Request logs are stored on infrastructure operated by OneQAZ, including internal analytics copies.</p>
+      <ul>
+        <li><strong>IP addresses</strong>, and the session key derived from them, are kept for up to
+        <strong>12 months</strong>. After that they are irreversibly replaced using a one-way transformation whose random
+        key is discarded after each run, so the remaining records can no longer be linked to an IP address.</li>
+        <li>The rest of each request record (tool name, whitelisted parameters, outcome, client and protocol metadata) is
+        kept as usage history. Once the IP-derived fields are replaced it no longer identifies you, except that requests
+        made with an API key remain attributable to that key.</li>
+        <li>If you were issued an API key, the contact email attached to it is kept while the key is issued to you. You can
+        ask us to delete it at any time.</li>
+      </ul>
+    </section>
+
+    <section id="en-sharing">
+      <h2><span class="num">04</span>Third-party sharing</h2>
+      <p>We do not share request data with third parties for their own purposes. Network traffic is routed through
+      Cloudflare (CDN / DDoS protection) as a data processor. The market data we return is derived from public market
+      sources and our own analysis.</p>
+    </section>
+
+    <section id="en-ai">
+      <h2><span class="num">05</span>AI client disclosure</h2>
+      <p>When an AI client (such as Claude, ChatGPT, or Gemini) calls OneQAZ on your behalf, your request reaches us
+      through that client's platform. Every response carries <code>disclaimer</code>,
+      <code>is_investment_advice=false</code>, and <code>data_classification=research_information_only</code>.</p>
+    </section>
+
+    <section id="en-choices">
+      <h2><span class="num">06</span>Your choices</h2>
+      <p>Because we do not maintain user accounts, the simplest way to stop data processing is to stop calling the
+      service. For questions or requests (including deletion) about data associated with your IP address or API key,
+      contact us below.</p>
+    </section>
+
+    <section id="en-changes">
+      <h2><span class="num">07</span>Changes</h2>
+      <p>We may update this policy. Material changes are reflected by the "Last updated" date above.</p>
+    </section>
+
+    <section id="en-contact">
+      <h2><span class="num">08</span>Contact</h2>
+      <p>Questions about this policy or your data: <a href="mailto:contact@oneqaz.com">contact@oneqaz.com</a></p>
+    </section>
+  </div>
+
+  <p class="doc-foot">This policy is published identically at <a href="https://oneqaz.com/privacy">oneqaz.com/privacy</a>
+  and <a href="https://api.oneqaz.com/privacy">api.oneqaz.com/privacy</a>.</p>
+</article>
+
+<!-- ═══════════════════════════ KO ═══════════════════════════ -->
+<article data-l="ko" lang="ko">
+  <div class="section-label">법적 고지</div>
+  <h1 class="section-title">개인정보 처리방침</h1>
+  <p class="section-desc">OneQAZ 트레이딩 인텔리전스 — MCP 서버 &amp; API</p>
+  <div class="doc-meta">최종 수정 2026-10-07 · 시행 2026-10-07</div>
+
+  <div class="toc">
+    <a href="#ko-collect">수집 정보</a><a href="#ko-use">이용 목적</a><a href="#ko-retention">보관</a>
+    <a href="#ko-sharing">제3자 제공</a><a href="#ko-ai">AI 클라이언트</a><a href="#ko-choices">이용자 선택</a>
+    <a href="#ko-changes">변경</a><a href="#ko-contact">연락처</a>
+  </div>
+
+  <p class="lead">OneQAZ는 Model Context Protocol(MCP)과 HTTP API를 통해 AI 클라이언트에게 라이브 시장 정보(암호화폐·국내주식·미국주식)를
+  제공하는 리서치 정보 서비스입니다. 본 방침은 이용자(또는 이용자를 대신하는 AI 클라이언트)가 <code>api.oneqaz.com</code>에 연결할 때
+  처리되는 데이터를 설명합니다.</p>
+
+  <div class="note"><strong>투자 권유가 아닙니다.</strong> OneQAZ의 결과물은 페이퍼 트레이딩 기반 리서치 신호이며, 매수·매도를
+  권유하지 않습니다. OneQAZ는 매매를 실행하거나 자금을 보관하거나 금융 거래를 받지 않습니다.</div>
+
+  <div class="policy">
+    <section id="ko-collect">
+      <h2><span class="num">01</span>수집하는 정보</h2>
+      <p>회원 계정을 요구하지 <strong>않으며</strong>, 호출자의 이름·이메일·결제 정보를 수집하지 않습니다. 요청마다 다음을 기록합니다.</p>
+      <dl class="fields">
+        <div class="field"><dt>IP 주소</dt><dd>요청 수 제한, 남용 방지, 지역 라우팅. Cloudflare를 거친 요청은 Cloudflare가 전달한 클라이언트
+        주소입니다.</dd></div>
+        <div class="field"><dt>User-agent</dt><dd>클라이언트 종류(Claude, ChatGPT, Gemini 등) 식별.</dd></div>
+        <div class="field"><dt>tool / resource 이름</dt><dd>요청한 tool 또는 resource 와 요청 유형(예: <code>get_daily_brief</code>).</dd></div>
+        <div class="field"><dt>결과 메타데이터</dt><dd>성공·실패, HTTP 상태, JSON-RPC 오류 코드, 짧은 오류 설명(최대 200자 — 검증 오류가 되돌려
+        보낸 입력값은 가림), 응답 시간(ms), 결과 형태(반환 행 수, 전체 건수, 잘림·빈 결과 여부).</dd></div>
+        <div class="field"><dt>파생 세션 키</dt><dd>IP + user-agent + 30분 구간의 해시. 이용자 기기에 쿠키나 기타 영구 식별자를 남기지 않습니다.</dd></div>
+        <div class="field"><dt>API 키(제공한 경우)</dt><dd>요청 한도 등급과 접근 수준 판정에 사용합니다. 키별 사용량을 집계할 수 있도록 요청마다
+        판정된 등급과 키의 단방향 지문(SHA-256 해시 앞 16자리)을 기록합니다. 키 자체는 요청 로그에 기록하지 않습니다.</dd></div>
+        <div class="field"><dt>허용 목록 요청 인자</dt><dd>수요 집계를 위해 tool 인자의 제한된 요약(<code>symbol</code>, <code>market</code>,
+        <code>interval</code>, <code>category</code>, 기간, 결과 개수, 식별자 등)과 <code>search</code> 도구의 검색어(최대 60자)를 기록합니다.
+        인자 없이 호출한 경우 그 사실만 기록합니다. 허용 목록 밖의 인자 내용은 저장하지 <strong>않습니다</strong>.</dd></div>
+        <div class="field"><dt>MCP 클라이언트·프로토콜 메타데이터</dt><dd><code>initialize</code> 때 보낸 클라이언트 이름·버전
+        (<code>clientInfo</code>), MCP 프로토콜 버전(<code>MCP-Protocol-Version</code> 헤더 또는 <code>initialize</code> 요청),
+        <code>Accept</code> 헤더(앞 200자), 클라이언트가 보낸 경우 프로토콜 세션 ID 헤더, 세션 내 호출 순서, 요청·응답 크기.</dd></div>
+        <div class="field"><dt>트래픽 분류</dt><dd>집계 통계를 정직하게 유지하기 위한 파생 라벨(크롤러 / 운영자 자체 점검 / 외부).</dd></div>
+      </dl>
+      <p>이용자에게 보낸 응답 본문은 저장하지 않습니다.</p>
+    </section>
+
+    <section id="ko-use">
+      <h2><span class="num">02</span>이용 목적</h2>
+      <ul>
+        <li>서비스 운영·보안(요청 수 제한, 남용 방지, 디버깅).</li>
+        <li>클라이언트·프로토콜 호환성 문제 진단.</li>
+        <li>제품 개선을 위한 집계 사용량 측정(어떤 tool 이 어떤 클라이언트에서 호출되는지).</li>
+        <li>접근 등급 적용 및 API 키별 사용량 집계.</li>
+      </ul>
+      <p>데이터를 판매하거나 광고 프로필을 만드는 데 사용하지 <strong>않습니다</strong>.</p>
+    </section>
+
+    <section id="ko-retention">
+      <h2><span class="num">03</span>저장 및 보관</h2>
+      <p>요청 로그는 OneQAZ가 운영하는 인프라(내부 분석용 사본 포함)에 저장됩니다.</p>
+      <ul>
+        <li><strong>IP 주소</strong>와 IP에서 파생된 세션 키는 <strong>최대 12개월</strong> 보관합니다. 이후에는 실행마다 폐기되는 임의 키를
+        사용한 단방향 변환으로 비가역 치환해, 남은 기록을 IP 주소와 연결할 수 없게 합니다.</li>
+        <li>나머지 기록(tool 이름, 허용 목록 인자, 결과, 클라이언트·프로토콜 메타데이터)은 사용 이력으로 보관합니다. IP 파생 항목이 치환된
+        뒤에는 이용자를 식별하지 않으며, 다만 API 키로 한 요청은 해당 키에 귀속된 채로 남습니다.</li>
+        <li>API 키를 발급받은 경우, 키에 연결된 연락 이메일은 키가 발급돼 있는 동안 보관합니다. 언제든 삭제를 요청할 수 있습니다.</li>
+      </ul>
+    </section>
+
+    <section id="ko-sharing">
+      <h2><span class="num">04</span>제3자 제공</h2>
+      <p>요청 데이터를 제3자의 자체 목적으로 제공하지 않습니다. 네트워크 트래픽은 데이터 처리자인 Cloudflare(CDN·DDoS 방어)를 거칩니다.
+      응답으로 제공하는 시장 데이터는 공개 시장 자료와 OneQAZ의 자체 분석에서 나옵니다.</p>
+    </section>
+
+    <section id="ko-ai">
+      <h2><span class="num">05</span>AI 클라이언트 고지</h2>
+      <p>AI 클라이언트(Claude, ChatGPT, Gemini 등)가 이용자를 대신해 OneQAZ를 호출하면, 요청은 해당 클라이언트의 플랫폼을 거쳐 도달합니다.
+      모든 응답에는 <code>disclaimer</code>, <code>is_investment_advice=false</code>,
+      <code>data_classification=research_information_only</code> 가 포함됩니다.</p>
+    </section>
+
+    <section id="ko-choices">
+      <h2><span class="num">06</span>이용자의 선택</h2>
+      <p>회원 계정을 운영하지 않으므로, 데이터 처리를 멈추는 가장 간단한 방법은 서비스 호출을 중단하는 것입니다. 본인 IP 주소나 API 키와
+      관련된 데이터에 대한 문의나 요청(삭제 포함)은 아래 연락처로 보내 주십시오.</p>
+    </section>
+
+    <section id="ko-changes">
+      <h2><span class="num">07</span>방침 변경</h2>
+      <p>본 방침은 변경될 수 있으며, 중요한 변경은 상단의 "최종 수정" 날짜로 표시합니다.</p>
+    </section>
+
+    <section id="ko-contact">
+      <h2><span class="num">08</span>연락처</h2>
+      <p>본 방침 또는 이용자 데이터에 관한 문의: <a href="mailto:contact@oneqaz.com">contact@oneqaz.com</a></p>
+    </section>
+  </div>
+
+  <p class="doc-foot">본 방침은 <a href="https://oneqaz.com/privacy">oneqaz.com/privacy</a> 와
+  <a href="https://api.oneqaz.com/privacy">api.oneqaz.com/privacy</a> 에 동일하게 게시됩니다.</p>
+</article>
+
+</div>
+</main>
+
+<footer>
+  <div class="container">
+    <div class="footer-links">
+      <a href="https://github.com/wnsod/oneqaz-trading-mcp" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://pypi.org/project/oneqaz-trading-mcp/" target="_blank" rel="noopener">PyPI</a>
+      <a href="https://blog.oneqaz.com/en/rss.xml" target="_blank" rel="noopener" data-blog-path="rss.xml">RSS</a>
+      <a href="https://oneqaz.com/privacy" class="current">Privacy</a>
+      <a href="mailto:contact@oneqaz.com">Contact</a>
+    </div>
+    <div class="footer-copy">&copy; 2026 OneQAZ. All rights reserved.</div>
+  </div>
+</footer>
+
+<script>
+var BLOG_BASE = 'https://blog.oneqaz.com/';
+var TITLES = { en: 'Privacy Policy — OneQAZ', ko: '개인정보 처리방침 — OneQAZ' };
+
+function setLang(lang) {
+  var root = document.documentElement;
+  root.setAttribute('data-lang', lang);
+  root.lang = lang;
+  try { localStorage.setItem('oqz-lang', lang); } catch (e) {}
+  document.getElementById('langEn').classList.toggle('active', lang === 'en');
+  document.getElementById('langKo').classList.toggle('active', lang === 'ko');
+  document.title = TITLES[lang];
+  // Blog links follow the site language (EN → blog /en/ mirror) — same rule as the home page.
+  var links = document.querySelectorAll('a[data-blog-path]');
+  for (var i = 0; i < links.length; i++) {
+    links[i].href = BLOG_BASE + (lang === 'en' ? 'en/' : '') + links[i].getAttribute('data-blog-path');
+  }
+}
+setLang(document.documentElement.getAttribute('data-lang') === 'ko' ? 'ko' : 'en');
+
+try {
+  window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', function (e) {
+    document.documentElement.setAttribute('data-theme', e.matches ? 'light' : 'dark');
+  });
+} catch (e) {}
+
+var NAV = document.querySelector('nav');
+function onScroll() {
+  var h = document.documentElement;
+  var max = h.scrollHeight - h.clientHeight;
+  document.getElementById('progressFill').style.width = (max > 0 ? h.scrollTop / max * 100 : 0) + '%';
+  NAV.classList.toggle('scrolled', h.scrollTop > 24);
+}
+window.addEventListener('scroll', onScroll);
+onScroll();
+</script>
+</body>
+</html>"""
 
 
 # ---------------------------------------------------------------------------

@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.3] - 2026-10-07
+
+### Changed — `/privacy` page design
+
+- The bundled `/privacy` page now uses the oneqaz.com design system: shared theme (light/dark
+  following the device setting), navigation, footer, and an **EN/KO language toggle** with a full
+  Korean translation (previously English only, with a one-line Korean subtitle).
+- One HTML source now serves both <https://oneqaz.com/privacy> and <https://api.oneqaz.com/privacy>
+  byte-for-byte, so links and assets are absolute.
+- Policy content is unchanged from 0.4.2. No other code changes.
+
 ## [0.4.2] - 2026-10-07
 
 ### Changed — privacy policy
