@@ -15,20 +15,20 @@ This document covers two different situations:
 **The full policy (English / 한국어) is <https://api.oneqaz.com/privacy>**, published identically at
 <https://oneqaz.com/privacy> and served by this package's `health_route.py`. It is written to meet
 Korea's Personal Information Protection Act (PIPA) and to inform users in the EU/EEA and UK.
-This section is a summary only; the hosted page governs. Last updated: **2026-10-07**.
+This section is a summary only; the hosted page governs. Last updated: **2026-10-08** (added optional account connection for AI apps — OAuth).
 
 OneQAZ is a research-information service. Outputs are paper-trading research signals, **not
 investment advice**. OneQAZ does not execute trades, hold funds, or accept financial transactions.
 
 | Topic | Summary |
 |---|---|
-| Items | Per request: IP address, user-agent, tool/resource name, outcome metadata (HTTP / JSON-RPC codes, short redacted error text, latency, result shape), derived session key, API-key fingerprint + tier (never the key), whitelisted arguments (`search` keyword ≤ 60 chars), MCP client & protocol metadata, traffic class. API-key holders: contact email. No accounts, no names, no payment details, no response contents. |
+| Items | Per request: IP address, user-agent, tool/resource name, outcome metadata (HTTP / JSON-RPC codes, short redacted error text, latency, result shape), derived session key, API-key fingerprint + tier (never the key), whitelisted arguments (`search` keyword ≤ 60 chars), MCP client & protocol metadata, traffic class. API-key holders: contact email. Anonymous use needs no account; no names, no payment details, no response contents. **If you connect an AI app to a OneQAZ account (optional, OAuth):** a random account identifier, the connected app's identifier, the connection record (app, access granted, when, withdrawal), token hashes only, and failed sign-in IP/time in server logs. The API key typed on the sign-in screen is checked only — never stored or logged. |
 | Purpose & legal basis | Operate and secure the service, diagnose compatibility, measure aggregate usage, manage API keys. Request logs: legitimate interest (PIPA Art. 15(1)(6); GDPR Art. 6(1)(f)). Key-holder email: issuing the key you asked for (PIPA Art. 15(1)(4); GDPR Art. 6(1)(b)). Not sold, not used for advertising profiles, AI-model training or automated decisions. |
-| Retention & destruction | IP addresses and IP-derived session keys: up to **12 months**, then irreversibly replaced (one-way transformation, random key discarded each run). Key-holder email: until the key is revoked or you ask for deletion. Database backups rotate out within about four weeks. |
+| Retention & destruction | IP addresses and IP-derived session keys: up to **12 months**, then irreversibly replaced (one-way transformation, random key discarded each run). Key-holder email: until the key is revoked or you ask for deletion. Account connection: sign-in codes 1 day, token hashes 7 days after expiry/revocation, connection records 30 days after withdrawal or 12 months after last use, unconnected app registrations 30 days, the account until you ask for deletion (daily cleanup job). Database backups rotate out within about four weeks. |
 | Outsourcing & overseas transfer | Cloudflare, Inc. (US — CDN, DDoS protection, tunnel), GitHub, Inc. (US — website hosting), BunnyWay d.o.o. (Slovenia — web fonts). Basis: PIPA Art. 28-8(1)(3). Contacts and items are listed on the hosted page. |
 | Third parties | None, except where the law requires it. |
-| Cookies | None. The website keeps only your language choice in the browser's local storage. |
-| Your rights | Access, correction, deletion, suspension (PIPA Arts. 35–37; GDPR rights where applicable) via **contact@oneqaz.com**; answered within 10 days. |
+| Cookies | None — including the account sign-in screen. The website keeps only your language choice in the browser's local storage. |
+| Your rights | Access, correction, deletion, suspension (PIPA Arts. 35–37; GDPR rights where applicable) via **contact@oneqaz.com**; answered within 10 days. A connected AI app can be disconnected in the app or by asking us; its tokens stop working immediately. |
 | Privacy officer | OneQAZ Privacy Office — contact@oneqaz.com |
 | Remedies (Korea) | Personal Information Dispute Mediation Committee 1833-6972 · KISA Infringement Report Center 118 · Supreme Prosecutors' Office 1301 · National Police Agency 182 |
 
