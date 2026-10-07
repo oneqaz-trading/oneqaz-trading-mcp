@@ -716,6 +716,10 @@ body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4
   </div>
 </nav>
 
+<!-- Cloudflare Email Address Obfuscation would turn the legally required contact addresses into
+     "[email protected]" for readers without JavaScript (crawlers, AI readers). email_off keeps them
+     as plain text on this page only. -->
+<!--email_off-->
 <main class="container">
 <div class="doc">
 
@@ -1158,6 +1162,7 @@ body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4
     <div class="footer-copy">&copy; 2026 OneQAZ. All rights reserved.</div>
   </div>
 </footer>
+<!--/email_off-->
 
 <script>
 var BLOG_BASE = 'https://blog.oneqaz.com/';

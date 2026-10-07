@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Fixed
+
+- `/privacy`: the page body is wrapped in `<!--email_off-->` so Cloudflare Email Address
+  Obfuscation no longer replaces the privacy-officer and processor contact addresses with
+  "[email protected]" for readers without JavaScript. No effect when the page is not served
+  through Cloudflare. Ships with the next release.
+
 ## [0.4.4] - 2026-10-07
 
 ### Changed — privacy policy completeness (Korea PIPA)
