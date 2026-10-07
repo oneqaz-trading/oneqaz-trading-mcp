@@ -18,6 +18,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   governing law — Republic of Korea). `/privacy` gains a Terms footer link; `/keys` wording now matches
   the privacy policy (per-key usage attribution via a one-way fingerprint).
 
+### Documentation
+
+- README brought in line with the live server (checked 2026-10-07):
+  coverage ~1,300 symbols (KR universe is KOSPI 200 + KOSDAQ 150, not KOSPI 200 only) plus 40+
+  macro instruments; Trust Layer walkthrough now reads accuracy against the persistence and
+  majority-class baselines (`skill_ci_95`, `beats_majority_baseline`, `n_effective`) instead of
+  raw hit rates; news lead-time tools are documented as `UNVERIFIED` (metrics withheld) rather
+  than as pre-news detection; the ledger hash chain's scope is stated precisely (macro-regime
+  predictions, sealed per UTC day — tamper-evident after the day closes, not a pre-outcome
+  commitment); macro and market structure described as parallel overlays, not a serial chain;
+  `_value_signals` URLs point at `api.oneqaz.com`; missing `market://{market_id}/positions`
+  template and `X-RateLimit-Daily-Limit` header added; the Trust Layer sample is replaced by one
+  tested against the live endpoint with fastmcp 2.14 and 4.0 (the old sample used a
+  non-existent `mcp.Client` API and illustrative accuracy figures).
+
 ## [0.4.4] - 2026-10-07
 
 ### Changed — privacy policy completeness (Korea PIPA)
