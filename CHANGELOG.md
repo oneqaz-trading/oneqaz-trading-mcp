@@ -18,6 +18,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   governing law — Republic of Korea). `/privacy` gains a Terms footer link; `/keys` wording now matches
   the privacy policy (per-key usage attribution via a one-way fingerprint).
 
+### Registry metadata
+
+- `server.json` merged with the monorepo copy and bumped to server version `1.2.0` (the registry's current
+  latest is `1.0.0` from 2026-04-07; a lower version would not become latest): adds the hosted
+  `streamable-http` remote (`https://api.oneqaz.com/mcp`, optional `X-API-Key`) and `websiteUrl`, keeps the
+  PyPI package entry (`0.4.4`, PostgreSQL env vars), new description. Validated against the
+  2025-12-11 server schema. Not yet published.
+
 ### Documentation
 
 - README brought in line with the live server (checked 2026-10-07):
