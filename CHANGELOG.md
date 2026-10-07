@@ -12,6 +12,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   Obfuscation no longer replaces the privacy-officer and processor contact addresses with
   "[email protected]" for readers without JavaScript. No effect when the page is not served
   through Cloudflare. Ships with the next release.
+- `/terms`: replaced the 2026-07-08 Terms of Use with the Terms of Service published at
+  <https://oneqaz.com/terms> (byte-identical; EN/KO; site design). The live-only clauses are kept
+  (derived analytics / no market-data licence, no reconstruction, no redistribution, fees & metering,
+  governing law — Republic of Korea). `/privacy` gains a Terms footer link; `/keys` wording now matches
+  the privacy policy (per-key usage attribution via a one-way fingerprint).
 
 ## [0.4.4] - 2026-10-07
 

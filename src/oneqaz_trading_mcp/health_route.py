@@ -1157,6 +1157,7 @@ body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4
       <a href="https://pypi.org/project/oneqaz-trading-mcp/" target="_blank" rel="noopener">PyPI</a>
       <a href="https://blog.oneqaz.com/en/rss.xml" target="_blank" rel="noopener" data-blog-path="rss.xml">RSS</a>
       <a href="https://oneqaz.com/privacy" class="current">Privacy</a>
+      <a href="https://oneqaz.com/terms">Terms</a>
       <a href="mailto:contact@oneqaz.com">Contact</a>
     </div>
     <div class="footer-copy">&copy; 2026 OneQAZ. All rights reserved.</div>
@@ -1278,97 +1279,529 @@ request early access by email &mdash; include your use case and expected daily c
 <p><a href="mailto:contact@oneqaz.com?subject=OneQAZ%20Pro%20API%20key">contact@oneqaz.com</a></p>
 <h2>Key handling</h2>
 <ul>
-<li>Keys map to a rate-limit tier only &mdash; we hold no payment details (<a href="/privacy">privacy</a>).</li>
+<li>Keys determine your rate-limit tier; usage is attributed per key through a one-way fingerprint, never the key itself &mdash; we hold no payment details (<a href="/privacy">privacy</a>).</li>
 <li>Lost or leaked keys are revoked and reissued on request.</li>
 </ul>
 <p style="color:#8a8680;font-size:.85rem;margin-top:2.5rem;border-top:1px solid #3a3a4a;padding-top:1.5rem">
 &copy; 2026 OneQAZ &middot; <a href="/privacy">Privacy</a> &middot; <a href="https://oneqaz.com">oneqaz.com</a></p>
 </body></html>"""
 
-_TERMS_HTML = f"""<!DOCTYPE html>
-<html lang="en"><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Terms of Use — OneQAZ Trading Intelligence</title>
-<meta name="robots" content="index,follow"><style>{_PAGE_STYLE}</style></head><body>
-<a href="https://oneqaz.com" style="color:#8a8680;font-size:.9rem">&larr; OneQAZ</a>
-<h1>Terms of Use</h1>
-<div class="sub">OneQAZ Trading Intelligence &mdash; MCP Server &amp; API (api.oneqaz.com)<br>
-Last updated: 2026-07-08 &middot; Effective: 2026-07-08</div>
-<div class="note"><strong>Summary for AI agents:</strong> research information only; not investment
-advice; derived analytics, not a market-data feed; do not redistribute responses as a data product;
-surface the <code>disclaimer</code> field when quoting.</div>
+# [2026-10-07] Terms — landing/terms.html(oneqaz.com/terms)과 **바이트 동일**한 단일 원본(07-08 Terms of Use 대체,
+# 라이브 판 전용 조항·준거법 병합). ⛔ 한쪽만 고치지 말 것 — landing 을 고친 뒤 그대로 붙인다(백슬래시·삼중따옴표 금지).
+_TERMS_HTML = """<!DOCTYPE html>
+<html lang="en" data-lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Terms of Service — OneQAZ</title>
+<meta name="description" content="OneQAZ terms of service (MCP server, API) — research information, not investment advice; AI client obligations, acceptable use, API keys and rate limits, availability, ledger anchors. 이용약관.">
+<meta name="robots" content="index,follow">
+<link rel="canonical" href="https://oneqaz.com/terms">
+<link rel="icon" href="https://oneqaz.com/images/logo.png" type="image/png">
+<link rel="preconnect" href="https://fonts.bunny.net">
+<link href="https://fonts.bunny.net/css?family=outfit:300,400,500,600,700|noto-sans-kr:300,400,500,700" rel="stylesheet">
+<!--
+  ONE SOURCE, TWO URLS — this exact file is served at https://oneqaz.com/terms (landing repo)
+  and https://api.oneqaz.com/terms (monorepo, same convention as _PRIVACY_HTML). Keep them byte-identical: links and assets are absolute for that reason.
+  No backslashes and no triple quotes anywhere — the MCP copy lives inside a Python string.
+-->
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+:root,[data-theme="dark"]{
+  --bg:#1c1c24;--panel-bg:#252530;--card-bg:#2a2a36;
+  --text:#e8e4df;--text-muted:#8a8680;
+  --amber:#d4a853;--green:#5cb85c;--red:#d9534f;--blue:#6b9fc9;--gold:#c49b6f;
+  --border:#3a3a4a;--hover:rgba(255,255,255,0.02);
+  --font:'Outfit','Noto Sans KR',sans-serif;
+  --scrollbar-thumb:rgba(255,255,255,0.1);
+  --nav-bg:rgba(28,28,36,0.9);
+}
+[data-theme="light"]{
+  --bg:#e8e4de;--panel-bg:#f2efe9;--card-bg:#ece9e3;
+  --text:#3a3632;--text-muted:#7a756e;
+  --amber:#9e7520;--green:#2d7a3a;--red:#b03225;--blue:#4272a0;--gold:#8c6a38;
+  --border:#cdc7bc;--hover:rgba(0,0,0,0.03);
+  --scrollbar-thumb:rgba(0,0,0,0.15);
+  --nav-bg:rgba(242,239,233,0.9);
+}
+html{scroll-behavior:smooth;font-size:16px}
+body{background:var(--bg);color:var(--text);font-family:var(--font);line-height:1.6;overflow-x:hidden}
+::selection{background:var(--amber);color:var(--bg)}
+body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.06) 2px,rgba(0,0,0,0.06) 4px);transition:opacity .4s}
+[data-theme="light"] body::after{opacity:0.3}
+body::before{
+  content:'';position:fixed;inset:-10%;pointer-events:none;z-index:9998;
+  background:radial-gradient(ellipse at center,transparent 55%,rgba(0,0,0,0.18) 100%);
+  clip-path:polygon(50% 0%,93.3% 25%,93.3% 75%,50% 100%,6.7% 75%,6.7% 25%);
+  transition:opacity .4s;
+}
+[data-theme="light"] body::before{opacity:0.08}
+::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--scrollbar-thumb);border-radius:2px}
 
-<h2>1. Permitted Use — Research and Informational Purposes Only</h2>
-<p>The service provides research and informational analytics. You may query, analyze, quote (with
-the accompanying disclaimer), and incorporate insights into your own analysis or answers.</p>
+/* Language: both languages ship in the HTML (crawlable); the toggle hides one. */
+[data-lang="en"] [data-l="ko"],[data-lang="ko"] [data-l="en"]{display:none !important}
 
-<h2>2. No Investment Advice; No Fiduciary Relationship</h2>
-<p>Nothing served by this API is investment advice or a recommendation to buy or sell any asset.
-Every response carries <code>is_investment_advice=false</code>. No fiduciary, advisory, or client
-relationship is created by use of the service.</p>
+.version-tag{position:fixed;top:12px;left:16px;z-index:100;display:block}
+.version-logo{width:28px;height:28px;filter:drop-shadow(0 0 6px rgba(212,168,83,0.3));opacity:.8;transition:opacity .2s}
+.version-logo:hover{opacity:1}
+.progress-bar{position:fixed;top:0;left:0;width:100%;height:2px;z-index:1000;background:var(--panel-bg)}
+.progress-bar .fill{height:100%;width:0;background:linear-gradient(90deg,var(--amber),var(--gold));transition:width .3s}
 
-<h2>3. Derived Analytics Only — No Underlying Market Data License</h2>
-<p>Responses are OneQAZ's own derived judgments (signals, forecasts, calibration, paper-trading
-outcomes). Use of the service grants <strong>no license to underlying exchange or vendor market
-data</strong>, and the service is not a market-data feed.</p>
+nav{position:fixed;top:0;right:0;z-index:100;padding:16px 24px;display:flex;gap:20px;align-items:center;font-size:12px;transition:background-color .3s}
+/* Document page: once scrolled, give the nav the same frosted bar the home page uses on mobile so body text never runs under it. */
+nav.scrolled{left:0;justify-content:flex-end;background:var(--nav-bg);backdrop-filter:blur(8px)}
+nav a{color:var(--text-muted);text-decoration:none;letter-spacing:1.5px;transition:color .2s;text-transform:uppercase;font-weight:500}
+nav a:hover{color:var(--amber)}
+nav a.nav-cta{border:1px solid var(--amber);color:var(--amber);padding:5px 12px;border-radius:6px;font-weight:600;transition:background .2s,box-shadow .2s,color .2s}
+nav a.nav-cta:hover{background:rgba(212,168,83,0.1);box-shadow:0 0 12px rgba(212,168,83,0.15);color:var(--amber)}
+.lang-toggle{display:flex;border:1px solid var(--border);border-radius:6px;overflow:hidden;margin-left:4px}
+.lang-toggle button{background:transparent;border:none;color:var(--text-muted);padding:4px 10px;font-size:11px;font-weight:600;letter-spacing:1px;cursor:pointer;font-family:var(--font);transition:all .2s}
+.lang-toggle button.active{background:var(--amber);color:var(--bg)}
 
-<h2>4. No Redistribution or Resale</h2>
-<p>You may not redistribute responses in bulk or in substantially original form as a dataset, feed,
-or competing service, nor resell access to the API.</p>
+.container{max-width:1080px;width:100%;margin:0 auto;padding:0 40px}
+.doc{max-width:820px;padding:128px 0 72px}
+.section-label{font-size:11px;color:var(--amber);letter-spacing:3px;text-transform:uppercase;margin-bottom:8px;font-weight:600;opacity:.8}
+.section-title{font-size:clamp(28px,4vw,40px);font-weight:700;margin-bottom:14px;color:var(--text);line-height:1.25}
+.section-desc{font-size:14px;color:var(--text-muted);max-width:720px;line-height:1.9;margin-bottom:10px;font-weight:300}
+.doc-meta{font-size:12px;color:var(--gold);letter-spacing:1px;font-weight:500;margin-bottom:28px}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 40px}
+.toc a{font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);border:1px solid var(--border);border-radius:6px;padding:4px 10px;text-decoration:none;font-weight:500;transition:color .2s,border-color .2s}
+.toc a:hover{color:var(--amber);border-color:var(--amber)}
 
-<h2>5. No Reconstruction of Market Data</h2>
-<p>You may not combine or reverse-engineer responses to reconstruct real-time or historical market
-data feeds of any exchange or vendor.</p>
+.lead{font-size:15px;line-height:1.9;font-weight:300;color:var(--text);margin-bottom:20px}
+.note{background:var(--panel-bg);border:1px solid var(--border);border-left:3px solid var(--amber);border-radius:10px;padding:16px 20px;font-size:14px;line-height:1.85;font-weight:300;margin:0 0 44px}
+.note strong{color:var(--amber)}
 
-<h2>6. API Key Integrity and Abuse Prohibition</h2>
-<p>Keys are per-holder; do not share keys or circumvent rate limits. Abusive traffic may be
-throttled or blocked.</p>
+.policy section{scroll-margin-top:84px;margin-bottom:44px}
+.policy h2{display:flex;align-items:baseline;gap:12px;font-size:20px;font-weight:600;color:var(--text);margin-bottom:16px;padding-bottom:10px;border-bottom:1px solid var(--border)}
+.policy h2 .num{font-size:11px;color:var(--amber);letter-spacing:2px;font-weight:600;flex-shrink:0}
+.policy p{font-size:15px;line-height:1.9;color:var(--text);font-weight:300;margin-bottom:14px}
+.policy ul{list-style:none;margin:0 0 14px}
+.policy ul li{position:relative;padding-left:20px;font-size:15px;line-height:1.85;font-weight:300;margin-bottom:10px}
+.policy ul li::before{content:'';position:absolute;left:3px;top:.72em;width:6px;height:6px;border-radius:50%;background:var(--amber);opacity:.8}
+.policy strong{font-weight:600}
+.policy a,.doc-foot a{color:var(--amber);text-decoration:none}
+.policy a:hover,.doc-foot a:hover{text-decoration:underline}
+.fields{border:1px solid var(--border);border-radius:12px;background:var(--panel-bg);overflow:hidden;margin:4px 0 16px}
+.field{display:grid;grid-template-columns:210px 1fr;gap:18px;padding:14px 20px}
+.field+.field{border-top:1px solid var(--border)}
+.field dt{font-size:13px;font-weight:600;color:var(--amber);letter-spacing:.3px;line-height:1.7}
+.field dd{font-size:14px;line-height:1.8;color:var(--text);font-weight:300}
+code{background:var(--card-bg);border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:.85em;color:var(--gold);word-break:break-word}
+.doc-foot{font-size:12px;color:var(--text-muted);line-height:1.8;border-top:1px solid var(--border);padding-top:20px;margin-top:8px}
 
-<h2>7. Data Classification and Provenance</h2>
-<p>All outputs are classified <code>research_information_only</code> and derive from paper (virtual)
-trading and OneQAZ's own models. Integrity metadata is published at <a href="/ledger">/ledger</a>.</p>
+footer{padding:60px 0 40px;border-top:1px solid var(--border);text-align:center}
+.footer-links{display:flex;justify-content:center;gap:28px;margin-bottom:24px;flex-wrap:wrap}
+.footer-links a{color:var(--text-muted);text-decoration:none;font-size:12px;letter-spacing:1px;transition:color .2s;font-weight:500}
+.footer-links a:hover,.footer-links a.current{color:var(--amber)}
+.footer-copy{font-size:11px;color:#4a4a5a;margin-bottom:16px}
 
-<h2>8. No Warranty; "As Is"</h2>
-<p>The service is provided as is, without warranty of accuracy, completeness, timeliness, or
-availability. Self-published latency history: <a href="/sla">/sla</a> (informational, not an SLA).</p>
+[data-theme="light"] .version-logo{filter:brightness(0.3) drop-shadow(0 0 4px rgba(158,117,32,0.2))}
+[data-theme="light"] .fields,[data-theme="light"] .note{box-shadow:0 1px 4px rgba(0,0,0,0.05)}
+body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4s}
 
-<h2>9. Past Performance</h2>
-<p>Past simulated performance does not predict future real-money returns.</p>
+@media(max-width:768px){
+  nav{padding:8px 10px;gap:8px;justify-content:flex-end;background:var(--nav-bg);backdrop-filter:blur(8px);width:100%;left:0;right:0}
+  nav a{font-size:9px;letter-spacing:.5px}
+  nav a.nav-cta{padding:4px 8px}
+  .version-tag{top:10px;left:10px}
+  .version-logo{width:22px;height:22px}
+  .lang-toggle button{padding:3px 8px;font-size:10px}
+  .container{padding:0 16px}
+  .doc{padding:88px 0 48px}
+  .field{grid-template-columns:1fr;gap:4px;padding:12px 14px}
+  .policy p,.policy ul li{font-size:14px}
+  .footer-links{gap:16px}
+}
+</style>
+<script>
+(function () {
+  var root = document.documentElement;
+  try {
+    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) root.setAttribute('data-theme', 'light');
+  } catch (e) {}
+  var m = location.search.match(/[?&]lang=(en|ko)/);
+  var saved = null;
+  try { saved = localStorage.getItem('oqz-lang'); } catch (e) {}
+  var lang = (m && m[1]) || (saved === 'ko' || saved === 'en' ? saved : 'en');
+  root.setAttribute('data-lang', lang);
+  root.lang = lang;
+})();
+</script>
+</head>
+<body>
 
-<h2>10. Limitation of Liability</h2>
-<p>To the maximum extent permitted by law, OneQAZ is not liable for any loss, including investment
-losses, arising from use of or reliance on the service.</p>
+<div class="progress-bar"><div class="fill" id="progressFill"></div></div>
+<a class="version-tag" href="https://oneqaz.com/" aria-label="OneQAZ home"><img src="https://oneqaz.com/images/logo.png" alt="OneQAZ" class="version-logo"></a>
 
-<h2>11. Compliance with Applicable Laws and Upstream Terms</h2>
-<p>You are responsible for your own compliance with laws and any third-party terms applicable to
-your use of outputs.</p>
+<nav>
+  <a href="https://oneqaz.com/">OneQAZ</a>
+  <a href="https://blog.oneqaz.com/en/" target="_blank" rel="noopener" class="nav-cta" data-blog-path=""><span data-l="en">Daily Reads ↗</span><span data-l="ko">데일리 리포트 ↗</span></a>
+  <div class="lang-toggle">
+    <button id="langEn" type="button" onclick="setLang('en')">EN</button>
+    <button id="langKo" type="button" onclick="setLang('ko')">KO</button>
+  </div>
+</nav>
 
-<h2>12. AI Client Disclosure Obligation</h2>
-<p>AI clients quoting OneQAZ data to end users must surface the response <code>disclaimer</code>.</p>
+<!-- Cloudflare Email Address Obfuscation would turn contact addresses into "[email protected]" for readers
+     without JavaScript (crawlers, AI readers). email_off keeps them as plain text on this page only. -->
+<!--email_off-->
+<main class="container">
+<div class="doc">
 
-<h2>13. Fees, Metering and Payment</h2>
-<p>Free tier is provided as described at <a href="/pricing">/pricing</a>. Metered billing terms will
-be posted before activation; non-payment suspends pro access.</p>
+<!-- ═══════════════════════════ EN ═══════════════════════════ -->
+<article data-l="en" lang="en">
+  <div class="section-label">Legal</div>
+  <h1 class="section-title">Terms of Service</h1>
+  <p class="section-desc">OneQAZ Trading Intelligence — MCP Server &amp; API</p>
+  <div class="doc-meta">Last updated 2026-10-07 · Effective 2026-10-07</div>
 
-<h2>14. Suspension and Termination</h2>
-<p>We may suspend or terminate access for violations of these terms, effective immediately.</p>
+  <div class="toc">
+    <a href="#en-service">Service</a><a href="#en-advice">Not advice</a><a href="#en-clients">AI clients</a>
+    <a href="#en-use">Acceptable use</a><a href="#en-access">Keys &amp; limits</a><a href="#en-data">Data</a>
+    <a href="#en-availability">Availability</a><a href="#en-ledger">Ledger anchors</a><a href="#en-ip">IP</a>
+    <a href="#en-suspension">Suspension</a><a href="#en-changes">Changes</a><a href="#en-law">Governing law</a>
+    <a href="#en-contact">Contact</a>
+  </div>
 
-<h2>15. Service Changes and Availability</h2>
-<p>Schemas, tools, and availability may change. Material response-contract changes are versioned in
-tool metadata where practical. This service is operated on a best-effort basis.</p>
+  <p class="lead">By connecting to <code>api.oneqaz.com</code> — directly, or through an AI client acting on your behalf —
+  you agree to these Terms. If you operate an AI client or integration that connects to OneQAZ, you accept them on behalf
+  of that client.</p>
 
-<h2>16. Modification of Terms</h2>
-<p>We may update these terms; material changes are reflected by the "Last updated" date above.</p>
+  <div class="note"><strong>Not investment advice.</strong> OneQAZ outputs are paper-trading research signals, not
+  recommendations to buy or sell. We do not execute trades, hold funds, or accept financial transactions.</div>
 
-<h2>17. Governing Law and Dispute Resolution</h2>
-<p>These terms are governed by the laws of the Republic of Korea; disputes are subject to the
-jurisdiction of Korean courts.</p>
+  <div class="policy">
+    <section id="en-service">
+      <h2><span class="num">01</span>What this service is</h2>
+      <p>OneQAZ exposes live market intelligence (crypto, Korean stocks, US stocks) and global macro context to AI clients
+      over the Model Context Protocol (MCP) and an HTTP API. It is a <strong>research-information service</strong>.</p>
+      <p>The service can be used without an account. Access is attributed to the connecting client (AI platform, developer
+      or organization) or, when one is used, to an API key — not to individual end users.</p>
+    </section>
 
-<h2>18. Regulatory Status Disclosure</h2>
-<p>OneQAZ is not a registered investment adviser or brokerage in any jurisdiction and does not hold
-client funds or execute orders.</p>
+    <section id="en-advice">
+      <h2><span class="num">02</span>Not investment advice</h2>
+      <p>This is the most important term in this document.</p>
+      <ul>
+        <li>OneQAZ outputs are <strong>research signals and observed market states</strong>, not recommendations to buy, sell or hold any asset.</li>
+        <li>Performance figures come from <strong>paper trading</strong> (simulated, no real money). Past simulated performance does not predict future real-money results.</li>
+        <li>OneQAZ is <strong>not</strong> a licensed investment adviser, broker or financial institution and provides no personalized investment advice. Using the service creates no advisory or fiduciary relationship.</li>
+        <li>Responses carry <code>disclaimer</code>, <code>is_investment_advice=false</code> and <code>data_classification=research_information_only</code>.</li>
+        <li><strong>You are solely responsible for any trading or financial decision you make.</strong></li>
+      </ul>
+    </section>
 
-<p style="color:#8a8680;font-size:.85rem;margin-top:2.5rem;border-top:1px solid #3a3a4a;padding-top:1.5rem">
-&copy; 2026 OneQAZ &middot; <a href="/privacy">Privacy</a> &middot; <a href="/pricing">Pricing</a>
-&middot; <a href="https://oneqaz.com">oneqaz.com</a></p>
-</body></html>"""
+    <section id="en-clients">
+      <h2><span class="num">03</span>Obligations of AI clients</h2>
+      <p>If you operate an AI client or product that relays OneQAZ data to people, you must:</p>
+      <ul>
+        <li>Surface the <code>disclaimer</code> when quoting OneQAZ data to a person.</li>
+        <li>Not present OneQAZ output as personalized investment advice or as a buy/sell recommendation.</li>
+        <li>Not strip the paper-trading context from performance figures.</li>
+        <li>Not attribute to OneQAZ a recommendation it did not make.</li>
+        <li>Keep the <code>disclaimer</code>, <code>data_classification</code> and source (<code>_source</code>) fields intact when relaying data.</li>
+      </ul>
+    </section>
+
+    <section id="en-use">
+      <h2><span class="num">04</span>Acceptable use</h2>
+      <p>You may query the service for research, analysis and product integration. You may <strong>not</strong>:</p>
+      <ul>
+        <li>Circumvent rate limits, or use multiple identities or keys to obtain additional quota.</li>
+        <li>Redistribute or resell responses, in whole or in substantial part, as a data product or feed, or scrape the dataset in bulk.</li>
+        <li>Reconstruct underlying market data (such as prices, volumes or order books) from responses.</li>
+        <li>Attempt to access non-public endpoints, other clients' data or the underlying infrastructure.</li>
+        <li>Use the service in a way that degrades availability for other clients, including high-frequency automated polling that never completes a request.</li>
+      </ul>
+      <p>You are responsible for complying with the laws that apply to your use and with the terms of any upstream data source.</p>
+    </section>
+
+    <section id="en-access">
+      <h2><span class="num">05</span>Access, API keys and rate limits</h2>
+      <dl class="fields">
+        <div class="field"><dt>Free — no key</dt><dd>1,500 requests per day · 60 per minute</dd></div>
+        <div class="field"><dt>Pro — API key</dt><dd>50,000 requests per day · 200 per minute</dd></div>
+      </dl>
+      <ul>
+        <li>Requests without a key use the Free tier. A request with an <strong>invalid, inactive or expired key is rejected</strong> with HTTP 401 and a <code>WWW-Authenticate</code> header; it is not silently downgraded.</li>
+        <li>Exceeding a limit returns HTTP 429 with a <code>Retry-After</code> header. Current limits are reported in <code>X-RateLimit-*</code> response headers.</li>
+        <li>API keys are issued to the requester, must be kept confidential and must not be shared or resold. We may revoke a key that is misused or exposed.</li>
+        <li>The Free tier is free of charge. Terms for paid (Pro) access or metered billing will be published before they take effect; unpaid Pro access may be suspended.</li>
+        <li>Tiers and limits may change; material changes are announced before they take effect.</li>
+      </ul>
+    </section>
+
+    <section id="en-data">
+      <h2><span class="num">06</span>Data we record</h2>
+      <p>We record the minimum needed to operate, secure and improve the service — request metadata, a whitelisted summary
+      of structured tool parameters, the <code>search</code> keyword truncated to 60 characters, and a one-way fingerprint of
+      an API key (never the key itself). What we record, why, and for how long is set out in the
+      <a href="https://oneqaz.com/privacy">Privacy Policy</a>, which forms part of these Terms.</p>
+    </section>
+
+    <section id="en-availability">
+      <h2><span class="num">07</span>Availability and accuracy</h2>
+      <p>The service is provided <strong>"as is"</strong>, without warranty of any kind.</p>
+      <ul>
+        <li>No guaranteed uptime, latency, or continuity of any specific tool or field.</li>
+        <li>Market data may be delayed, incomplete, revised or unavailable.</li>
+        <li>Tools, schemas and response shapes may change; breaking changes are announced where practicable.</li>
+        <li>To the extent permitted by law, OneQAZ is not liable for losses arising from use of, or inability to use, the service.</li>
+      </ul>
+    </section>
+
+    <section id="en-ledger">
+      <h2><span class="num">08</span>Prediction ledger and public anchors</h2>
+      <p>Predictions are recorded before they are scored, and the prediction ledger is hash-chained daily. The chain hash is
+      periodically published at <a href="https://blog.oneqaz.com/anchors/" target="_blank" rel="noopener">blog.oneqaz.com/anchors</a>
+      with an OpenTimestamps proof, so anyone can check that published records were not altered afterwards. These anchors prove
+      <strong>immutability after publication</strong> — not the accuracy or future performance of any signal.</p>
+    </section>
+
+    <section id="en-ip">
+      <h2><span class="num">09</span>Intellectual property</h2>
+      <p>OneQAZ retains all rights in the service, its analytics, schemas and documentation. These Terms grant a limited,
+      revocable, non-exclusive right to query the service and use the returned data within your product, subject to
+      section 04. Responses are derived analytics, not a market-data feed: no licence to underlying third-party market data is
+      granted. Raw market data originates from third-party sources and remains subject to their terms.</p>
+    </section>
+
+    <section id="en-suspension">
+      <h2><span class="num">10</span>Suspension</h2>
+      <p>We may throttle, suspend or terminate access that violates these Terms, threatens service stability, or must be
+      stopped at the request of a third-party data provider or under applicable law.</p>
+    </section>
+
+    <section id="en-changes">
+      <h2><span class="num">11</span>Changes</h2>
+      <p>These Terms take effect on 2026-10-07. We announce changes by updating the date above; continued use after a change
+      means you accept the updated Terms. Previous versions are available in the
+      <a href="https://github.com/wnsod/oneqaz/commits/main/terms.html" target="_blank" rel="noopener">public change history</a>.
+      These Terms replace the Terms of Use dated 2026-07-08 previously published at <code>api.oneqaz.com/terms</code>.</p>
+    </section>
+
+    <section id="en-law">
+      <h2><span class="num">12</span>Governing law</h2>
+      <p>These Terms are governed by the laws of the Republic of Korea, and disputes arising from them are subject to the
+      jurisdiction of the courts of the Republic of Korea.</p>
+    </section>
+
+    <section id="en-contact">
+      <h2><span class="num">13</span>Contact</h2>
+      <dl class="fields">
+        <div class="field"><dt>Contact</dt><dd><a href="mailto:contact@oneqaz.com">contact@oneqaz.com</a></dd></div>
+      </dl>
+    </section>
+  </div>
+
+  <p class="doc-foot">These Terms are published identically at <a href="https://oneqaz.com/terms">oneqaz.com/terms</a>
+  and <a href="https://api.oneqaz.com/terms">api.oneqaz.com/terms</a>.
+  See also the <a href="https://oneqaz.com/privacy">Privacy Policy</a>.</p>
+</article>
+
+<!-- ═══════════════════════════ KO ═══════════════════════════ -->
+<article data-l="ko" lang="ko">
+  <div class="section-label">법적 고지</div>
+  <h1 class="section-title">이용약관</h1>
+  <p class="section-desc">OneQAZ 트레이딩 인텔리전스 — MCP 서버 및 API</p>
+  <div class="doc-meta">최종 수정 2026-10-07 · 시행 2026-10-07</div>
+
+  <div class="toc">
+    <a href="#ko-service">서비스</a><a href="#ko-advice">투자자문 아님</a><a href="#ko-clients">AI 클라이언트</a>
+    <a href="#ko-use">이용 조건</a><a href="#ko-access">키·호출 제한</a><a href="#ko-data">기록 데이터</a>
+    <a href="#ko-availability">가용성</a><a href="#ko-ledger">원장 앵커</a><a href="#ko-ip">지식재산</a>
+    <a href="#ko-suspension">이용 제한</a><a href="#ko-changes">변경</a><a href="#ko-law">준거법</a>
+    <a href="#ko-contact">연락처</a>
+  </div>
+
+  <p class="lead"><code>api.oneqaz.com</code>에 직접 또는 이용자를 대신하는 AI 클라이언트를 통해 연결하면 본 약관에 동의한
+  것으로 봅니다. OneQAZ에 연결하는 AI 클라이언트나 연동 서비스를 운영하는 경우, 해당 클라이언트를 대표하여 본 약관에
+  동의한 것으로 봅니다.</p>
+
+  <div class="note"><strong>투자 권유가 아닙니다.</strong> OneQAZ의 결과물은 페이퍼 트레이딩 기반 리서치 신호이며, 매수·매도를
+  권유하지 않습니다. OneQAZ는 매매를 실행하거나 자금을 보관하거나 금융 거래를 받지 않습니다.</div>
+
+  <div class="policy">
+    <section id="ko-service">
+      <h2><span class="num">01</span>서비스의 성격</h2>
+      <p>OneQAZ는 MCP(Model Context Protocol)와 HTTP API를 통해 AI 클라이언트에 라이브 시장 정보(암호화폐·국내주식·미국주식)와
+      글로벌 매크로 맥락을 제공하는 <strong>리서치 정보 서비스</strong>입니다.</p>
+      <p>본 서비스는 계정 없이 이용할 수 있습니다. 이용은 개별 최종 사용자가 아니라 연결하는 클라이언트(AI 플랫폼·개발자·기관)
+      또는 API 키를 사용한 경우 해당 키 단위로 귀속됩니다.</p>
+    </section>
+
+    <section id="ko-advice">
+      <h2><span class="num">02</span>투자자문이 아님</h2>
+      <p>본 약관에서 가장 중요한 조항입니다.</p>
+      <ul>
+        <li>OneQAZ의 결과물은 <strong>리서치 신호와 관측된 시장 상태</strong>이며, 어떤 자산의 매수·매도·보유 권유도 아닙니다.</li>
+        <li>성과 수치는 <strong>페이퍼 트레이딩</strong>(실제 자금 없는 모의매매) 결과이며, 과거 모의 성과가 실제 수익을 보장하지 않습니다.</li>
+        <li>OneQAZ는 투자자문업자·투자중개업자·금융기관이 <strong>아니며</strong>, 개인 맞춤형 투자자문을 제공하지 않습니다. 서비스 이용으로 자문 관계나 신탁 관계가 성립하지 않습니다.</li>
+        <li>응답에는 <code>disclaimer</code>, <code>is_investment_advice=false</code>, <code>data_classification=research_information_only</code>가 포함됩니다.</li>
+        <li><strong>모든 거래 및 재무 결정의 책임은 이용자 본인에게 있습니다.</strong></li>
+      </ul>
+    </section>
+
+    <section id="ko-clients">
+      <h2><span class="num">03</span>AI 클라이언트의 의무</h2>
+      <p>OneQAZ 데이터를 사람에게 전달하는 AI 클라이언트나 서비스를 운영하는 경우 다음을 지켜야 합니다.</p>
+      <ul>
+        <li>OneQAZ 데이터를 사람에게 인용할 때 <code>disclaimer</code>를 함께 표시할 것.</li>
+        <li>OneQAZ 결과물을 개인 맞춤형 투자자문이나 매수·매도 권유로 제시하지 말 것.</li>
+        <li>성과 수치에서 페이퍼 트레이딩 맥락을 제거하지 말 것.</li>
+        <li>OneQAZ가 하지 않은 권유를 OneQAZ 출처로 표시하지 말 것.</li>
+        <li>데이터를 전달할 때 <code>disclaimer</code>, <code>data_classification</code>, 출처(<code>_source</code>) 필드를 제거하거나 바꾸지 말 것.</li>
+      </ul>
+    </section>
+
+    <section id="ko-use">
+      <h2><span class="num">04</span>이용 조건</h2>
+      <p>리서치·분석·제품 연동 목적의 조회는 허용됩니다. 다음 행위는 <strong>금지</strong>됩니다.</p>
+      <ul>
+        <li>호출 제한을 우회하거나, 여러 신원·키를 이용해 추가 쿼터를 얻는 행위.</li>
+        <li>응답의 전부 또는 상당 부분을 데이터 상품·피드로 재배포·재판매하거나, 데이터셋을 대량 수집하는 행위.</li>
+        <li>응답으로부터 원천 시장 데이터(가격·거래량·호가 등)를 재구성하는 행위.</li>
+        <li>비공개 엔드포인트, 다른 클라이언트의 데이터, 기반 인프라에 접근을 시도하는 행위.</li>
+        <li>요청을 끝내 완료하지 않는 고빈도 자동 폴링 등 다른 클라이언트의 가용성을 저해하는 이용.</li>
+      </ul>
+      <p>이용자는 자신의 이용에 적용되는 법령과 원천 데이터 출처의 약관을 준수할 책임이 있습니다.</p>
+    </section>
+
+    <section id="ko-access">
+      <h2><span class="num">05</span>접근, API 키 및 호출 제한</h2>
+      <dl class="fields">
+        <div class="field"><dt>Free — 키 없음</dt><dd>하루 1,500회 · 분당 60회</dd></div>
+        <div class="field"><dt>Pro — API 키</dt><dd>하루 50,000회 · 분당 200회</dd></div>
+      </dl>
+      <ul>
+        <li>키 없이 보낸 요청은 Free 등급으로 처리됩니다. <strong>유효하지 않거나 비활성·만료된 키로 보낸 요청은 거부</strong>되며
+        HTTP 401과 <code>WWW-Authenticate</code> 헤더가 반환됩니다(무료 등급으로 조용히 낮춰 처리하지 않습니다).</li>
+        <li>제한을 초과하면 HTTP 429와 <code>Retry-After</code> 헤더가 반환됩니다. 현재 한도는 <code>X-RateLimit-*</code> 응답 헤더로 안내됩니다.</li>
+        <li>API 키는 요청자에게 발급되며 비밀로 유지해야 하고, 공유·재판매할 수 없습니다. 오용되거나 노출된 키는 폐기할 수 있습니다.</li>
+        <li>Free 등급은 무료입니다. 유료(Pro) 이용이나 사용량 기반 과금 조건은 시행 전에 공개하며, 미납 시 Pro 이용이 중지될 수 있습니다.</li>
+        <li>등급과 한도는 변경될 수 있으며, 중대한 변경은 시행 전에 알립니다.</li>
+      </ul>
+    </section>
+
+    <section id="ko-data">
+      <h2><span class="num">06</span>기록하는 데이터</h2>
+      <p>서비스 운영·보안·개선에 필요한 최소한만 기록합니다 — 요청 메타데이터, 구조화된 도구 파라미터의 허용 목록 요약,
+      <code>search</code> 검색어(최대 60자), API 키의 단방향 지문(키 자체는 저장하지 않음). 기록 항목·목적·보유 기간은
+      본 약관의 일부인 <a href="https://oneqaz.com/privacy">개인정보 처리방침</a>에 따릅니다.</p>
+    </section>
+
+    <section id="ko-availability">
+      <h2><span class="num">07</span>가용성 및 정확성</h2>
+      <p>본 서비스는 <strong>있는 그대로(as is)</strong> 제공되며 어떠한 보증도 하지 않습니다.</p>
+      <ul>
+        <li>가동률·응답 속도·특정 도구나 필드의 존속을 보장하지 않습니다.</li>
+        <li>시장 데이터는 지연·누락·정정·중단될 수 있습니다.</li>
+        <li>도구·스키마·응답 형태는 변경될 수 있으며, 호환성을 깨는 변경은 가능한 범위에서 미리 알립니다.</li>
+        <li>법령이 허용하는 범위에서, 서비스 이용 또는 이용 불가로 인한 손실에 대해 OneQAZ는 책임지지 않습니다.</li>
+      </ul>
+    </section>
+
+    <section id="ko-ledger">
+      <h2><span class="num">08</span>예측 원장과 공개 앵커</h2>
+      <p>예측은 채점 전에 기록되며, 예측 원장은 매일 해시체인으로 연결됩니다. 체인 해시는 OpenTimestamps 증명과 함께
+      <a href="https://blog.oneqaz.com/anchors/" target="_blank" rel="noopener">blog.oneqaz.com/anchors</a>에 주기적으로 공개되어,
+      누구나 공개된 기록이 사후에 수정되지 않았음을 확인할 수 있습니다. 앵커가 증명하는 것은 <strong>공개 이후의 불변성</strong>이며,
+      신호의 정확성이나 미래 성과가 아닙니다.</p>
+    </section>
+
+    <section id="ko-ip">
+      <h2><span class="num">09</span>지식재산</h2>
+      <p>서비스·분석 결과물·스키마·문서에 대한 권리는 OneQAZ에 있습니다. 본 약관은 제4조 범위 내에서 서비스를 조회하고
+      반환 데이터를 귀하의 제품에 사용할 수 있는 제한적·철회 가능·비독점적 권리를 부여합니다. 응답은 파생 분석 결과이며 시장
+      데이터 피드가 아니므로, 원천 제3자 시장 데이터에 대한 이용 허락은 부여되지 않습니다. 원천 시장 데이터는 제3자
+      출처에서 비롯되며 해당 출처의 약관이 함께 적용됩니다.</p>
+    </section>
+
+    <section id="ko-suspension">
+      <h2><span class="num">10</span>이용 제한</h2>
+      <p>본 약관 위반, 서비스 안정성 위협, 제3자 데이터 제공자의 요구 또는 관계 법령에 따라 접근을 제한·중단·해지할 수 있습니다.</p>
+    </section>
+
+    <section id="ko-changes">
+      <h2><span class="num">11</span>약관 변경</h2>
+      <p>본 약관은 2026년 10월 7일부터 시행합니다. 변경 사항은 상단의 날짜를 갱신하여 알리며,
+      변경 후 계속 이용하면 변경된 약관에 동의한 것으로 봅니다. 이전 약관은
+      <a href="https://github.com/wnsod/oneqaz/commits/main/terms.html" target="_blank" rel="noopener">공개 변경 이력</a>에서 확인할 수 있습니다.
+      본 약관은 <code>api.oneqaz.com/terms</code>에 게시돼 있던 2026-07-08 이용약관을 대체합니다.</p>
+    </section>
+
+    <section id="ko-law">
+      <h2><span class="num">12</span>준거법 및 관할</h2>
+      <p>본 약관은 대한민국 법률에 따르며, 본 약관과 관련된 분쟁은 대한민국 법원의 관할로 합니다.</p>
+    </section>
+
+    <section id="ko-contact">
+      <h2><span class="num">13</span>연락처</h2>
+      <dl class="fields">
+        <div class="field"><dt>연락처</dt><dd><a href="mailto:contact@oneqaz.com">contact@oneqaz.com</a></dd></div>
+      </dl>
+    </section>
+  </div>
+
+  <p class="doc-foot">본 약관은 <a href="https://oneqaz.com/terms">oneqaz.com/terms</a> 와
+  <a href="https://api.oneqaz.com/terms">api.oneqaz.com/terms</a> 에 동일하게 게시됩니다.
+  <a href="https://oneqaz.com/privacy">개인정보 처리방침</a>도 함께 확인하세요.</p>
+</article>
+
+</div>
+</main>
+
+<footer>
+  <div class="container">
+    <div class="footer-links">
+      <a href="https://github.com/wnsod/oneqaz-trading-mcp" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://pypi.org/project/oneqaz-trading-mcp/" target="_blank" rel="noopener">PyPI</a>
+      <a href="https://blog.oneqaz.com/en/rss.xml" target="_blank" rel="noopener" data-blog-path="rss.xml">RSS</a>
+      <a href="https://oneqaz.com/privacy">Privacy</a>
+      <a href="https://oneqaz.com/terms" class="current">Terms</a>
+      <a href="mailto:contact@oneqaz.com">Contact</a>
+    </div>
+    <div class="footer-copy">&copy; 2026 OneQAZ. All rights reserved.</div>
+  </div>
+</footer>
+<!--/email_off-->
+
+<script>
+var BLOG_BASE = 'https://blog.oneqaz.com/';
+var TITLES = { en: 'Terms of Service — OneQAZ', ko: '이용약관 — OneQAZ' };
+
+function setLang(lang) {
+  var root = document.documentElement;
+  root.setAttribute('data-lang', lang);
+  root.lang = lang;
+  try { localStorage.setItem('oqz-lang', lang); } catch (e) {}
+  document.getElementById('langEn').classList.toggle('active', lang === 'en');
+  document.getElementById('langKo').classList.toggle('active', lang === 'ko');
+  document.title = TITLES[lang];
+  // Blog links follow the site language (EN → blog /en/ mirror) — same rule as the home page.
+  var links = document.querySelectorAll('a[data-blog-path]');
+  for (var i = 0; i < links.length; i++) {
+    links[i].href = BLOG_BASE + (lang === 'en' ? 'en/' : '') + links[i].getAttribute('data-blog-path');
+  }
+}
+setLang(document.documentElement.getAttribute('data-lang') === 'ko' ? 'ko' : 'en');
+
+try {
+  window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', function (e) {
+    document.documentElement.setAttribute('data-theme', e.matches ? 'light' : 'dark');
+  });
+} catch (e) {}
+
+var NAV = document.querySelector('nav');
+function onScroll() {
+  var h = document.documentElement;
+  var max = h.scrollHeight - h.clientHeight;
+  document.getElementById('progressFill').style.width = (max > 0 ? h.scrollTop / max * 100 : 0) + '%';
+  NAV.classList.toggle('scrolled', h.scrollTop > 24);
+}
+window.addEventListener('scroll', onScroll);
+onScroll();
+</script>
+</body>
+</html>"""
