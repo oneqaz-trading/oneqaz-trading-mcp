@@ -204,12 +204,14 @@ The **value signals** for whether to upgrade are baked into every response under
 
 ## Response shape (dual-audience)
 
-Every response carries fields for both AI agents and human end-users:
+Tool responses carry fields for both AI agents and human end-users:
 
 | Field | Audience | Purpose |
 |-------|----------|---------|
 | `full_data` | AI | Raw evidence for trust verification |
-| `_contract` | AI | Provenance + entity + assessment + confidence (schema-versioned) |
+| `disclaimer`, `is_investment_advice`, `is_real_money`, `data_classification` | Both | Research-only envelope on every response (`false` / `false` / `research_information_only`) |
+| `timestamp`, `request_id`, `_source` | AI | Response time, a request id to quote when reporting issues, and the serving origin / data source |
+| `_contract` | AI | Status / external / derived / unified **resources** only: provenance + entity + assessment + confidence (schema-versioned). Tools do not carry it. |
 | `_llm_summary` | AI | Multi-line narrative |
 | `ai_summary` | AI | One-line compressed summary for context windows |
 | `_value_signals` | AI | Pricing / upgrade signals for B2AI conversion judgment |
