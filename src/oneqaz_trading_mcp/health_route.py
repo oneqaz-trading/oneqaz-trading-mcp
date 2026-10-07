@@ -566,7 +566,7 @@ _PRIVACY_HTML = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Privacy Policy — OneQAZ</title>
-<meta name="description" content="OneQAZ MCP / API privacy policy — what we collect, how we use it, retention, and contact. 개인정보 처리방침.">
+<meta name="description" content="OneQAZ privacy policy (MCP server, API, website) — items, purposes and legal basis, retention, destruction, outsourcing and overseas transfer, rights, privacy officer. 개인정보 처리방침.">
 <meta name="robots" content="index,follow">
 <link rel="canonical" href="https://oneqaz.com/privacy">
 <link rel="icon" href="https://oneqaz.com/images/logo.png" type="image/png">
@@ -723,111 +723,221 @@ body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4
 <article data-l="en" lang="en">
   <div class="section-label">Legal</div>
   <h1 class="section-title">Privacy Policy</h1>
-  <p class="section-desc">OneQAZ Trading Intelligence — MCP Server &amp; API</p>
+  <p class="section-desc">OneQAZ Trading Intelligence — MCP Server, API &amp; Website</p>
   <div class="doc-meta">Last updated 2026-10-07 · Effective 2026-10-07</div>
 
   <div class="toc">
-    <a href="#en-collect">Collect</a><a href="#en-use">Use</a><a href="#en-retention">Retention</a>
-    <a href="#en-sharing">Sharing</a><a href="#en-ai">AI clients</a><a href="#en-choices">Choices</a>
-    <a href="#en-changes">Changes</a><a href="#en-contact">Contact</a>
+    <a href="#en-purpose">Purpose</a><a href="#en-items">Items</a><a href="#en-retention">Retention</a>
+    <a href="#en-destruction">Destruction</a><a href="#en-thirdparty">Third parties</a><a href="#en-transfer">Outsourcing &amp; transfer</a>
+    <a href="#en-security">Security</a><a href="#en-cookies">Cookies</a><a href="#en-rights">Your rights</a>
+    <a href="#en-officer">Privacy officer</a><a href="#en-remedies">Remedies</a><a href="#en-ai">AI clients</a>
+    <a href="#en-na">Not applicable</a><a href="#en-changes">Changes</a>
   </div>
 
-  <p class="lead">OneQAZ provides a research-information service that exposes live market intelligence
-  (crypto, Korean stocks, US stocks) to AI clients over the Model Context Protocol (MCP) and an HTTP API.
-  This policy explains what data we process when you (or an AI client acting on your behalf) connect to
-  <code>api.oneqaz.com</code>.</p>
+  <p class="lead">OneQAZ ("we") provides a research-information service that exposes live market intelligence (crypto,
+  Korean stocks, US stocks) to AI clients over the Model Context Protocol (MCP) and an HTTP API. This policy explains how
+  we process personal information when you (or an AI client acting on your behalf) use <code>api.oneqaz.com</code>, and
+  when you visit <code>oneqaz.com</code>. It is written to meet Korea's Personal Information Protection Act (PIPA) and to
+  inform users elsewhere, including in the EU/EEA and the UK. Our own servers are located in the Republic of Korea.</p>
 
-  <div class="note"><strong>Not investment advice.</strong> OneQAZ outputs are paper-trading research signals,
-  not recommendations to buy or sell. We do not execute trades, hold funds, or accept financial transactions.</div>
+  <div class="note"><strong>Not investment advice.</strong> OneQAZ outputs are paper-trading research signals, not
+  recommendations to buy or sell. We do not execute trades, hold funds, or accept financial transactions.</div>
 
   <div class="policy">
-    <section id="en-collect">
-      <h2><span class="num">01</span>What we collect</h2>
-      <p>We do <strong>not</strong> require user accounts, and we do not collect names, emails, or payment details
-      from callers. For each request we log:</p>
+    <section id="en-purpose">
+      <h2><span class="num">01</span>Purposes and legal basis</h2>
+      <ul>
+        <li>Operate and secure the service (rate limiting, abuse prevention, debugging).</li>
+        <li>Diagnose client and protocol compatibility problems.</li>
+        <li>Measure aggregate usage (which tools are called, by which client type) to improve the product.</li>
+        <li>Enforce access tiers, attribute usage to API keys, and issue and manage the API keys you request.</li>
+      </ul>
+      <p>We provide the service without accounts or consent screens. Request logs are processed on the basis of our
+      legitimate interest in operating and securing the service, limited to what is reasonably necessary (PIPA
+      Art. 15(1)(6); GDPR Art. 6(1)(f)). The contact email of an API-key holder is processed to issue and manage the key
+      you asked for (PIPA Art. 15(1)(4); GDPR Art. 6(1)(b)).</p>
+      <p>We do <strong>not</strong> sell your data, build advertising profiles, use request logs to train AI models, or make
+      automated decisions about you based on them.</p>
+    </section>
+
+    <section id="en-items">
+      <h2><span class="num">02</span>Personal information we process</h2>
+      <p>We do <strong>not</strong> require user accounts, and we do not collect names or payment details. The following is
+      generated automatically for each request to <code>api.oneqaz.com</code>:</p>
       <dl class="fields">
-        <div class="field"><dt>IP address</dt><dd>Rate limiting, abuse prevention, and regional routing. For requests
-        routed through Cloudflare this is the client address Cloudflare reports.</dd></div>
+        <div class="field"><dt>IP address</dt><dd>Rate limiting, abuse prevention, and regional routing. For requests routed
+        through Cloudflare this is the client address Cloudflare reports.</dd></div>
         <div class="field"><dt>User-agent</dt><dd>To identify the client type (Claude, ChatGPT, Gemini, etc.).</dd></div>
         <div class="field"><dt>Tool / resource name</dt><dd>The requested tool or resource and the request type
         (e.g. <code>get_daily_brief</code>).</dd></div>
         <div class="field"><dt>Outcome metadata</dt><dd>Success/failure, HTTP status, JSON-RPC error code, a short error
-        description (at most 200 characters; input values echoed back by validation errors are redacted), latency (ms),
-        and the shape of the result (rows returned, total available, whether it was truncated or empty).</dd></div>
-        <div class="field"><dt>Derived session key</dt><dd>A hash of IP + user-agent + a 30-minute time bucket. No cookie
-        or other persistent identifier is set on your client.</dd></div>
-        <div class="field"><dt>API key (if provided)</dt><dd>Used to determine your rate-limit tier and access level. With
-        each request we record the resolved tier and a one-way fingerprint of the key (the first 16 hex characters of its
-        SHA-256 hash) so usage can be attributed per key. The key itself is never written to request logs.</dd></div>
+        description (at most 200 characters; input values echoed back by validation errors are redacted), latency (ms), and
+        the shape of the result (rows returned, total available, whether it was truncated or empty).</dd></div>
+        <div class="field"><dt>Derived session key</dt><dd>A hash of IP + user-agent + a 30-minute time bucket. No cookie or
+        other persistent identifier is set on your client.</dd></div>
+        <div class="field"><dt>API key (if provided)</dt><dd>Used to determine your rate-limit tier and access level. With each
+        request we record the resolved tier and a one-way fingerprint of the key (the first 16 hex characters of its SHA-256
+        hash). The key itself is never written to request logs.</dd></div>
         <div class="field"><dt>Whitelisted request parameters</dt><dd>A limited summary of tool arguments (e.g.
         <code>symbol</code>, <code>market</code>, <code>interval</code>, <code>category</code>, date ranges, result limits,
         identifiers) and, for the <code>search</code> tool, the search keyword truncated to 60 characters. Calls made without
         arguments are recorded as such. Argument content outside this whitelist is <strong>not</strong> stored.</dd></div>
         <div class="field"><dt>MCP client &amp; protocol metadata</dt><dd>The client name/version sent at
-        <code>initialize</code> (<code>clientInfo</code>), the MCP protocol version (<code>MCP-Protocol-Version</code> header
-        or the <code>initialize</code> request), the <code>Accept</code> header (first 200 characters), the protocol session
-        id header if your client sends one, the call order within a session, and request/response payload sizes.</dd></div>
-        <div class="field"><dt>Traffic classification</dt><dd>A derived label (crawler / operator-self-test / external)
-        used to keep aggregate usage statistics honest.</dd></div>
+        <code>initialize</code> (<code>clientInfo</code>), the MCP protocol version, the <code>Accept</code> header (first 200
+        characters), the protocol session id header if your client sends one, the call order within a session, and
+        request/response payload sizes.</dd></div>
+        <div class="field"><dt>Traffic classification</dt><dd>A derived label (crawler / operator-self-test / external) used to
+        keep aggregate usage statistics honest.</dd></div>
+        <div class="field"><dt>Contact email (API-key holders only)</dt><dd>Provided by you when you ask for an API key.</dd></div>
       </dl>
-      <p>We do not store the contents of responses we send you.</p>
-    </section>
-
-    <section id="en-use">
-      <h2><span class="num">02</span>How we use it</h2>
-      <ul>
-        <li>Operate and secure the service (rate limiting, abuse prevention, debugging).</li>
-        <li>Diagnose client and protocol compatibility problems.</li>
-        <li>Measure aggregate usage (which tools are called, by which client type) to improve the product.</li>
-        <li>Enforce access tiers and attribute usage to API keys.</li>
-      </ul>
-      <p>We do <strong>not</strong> sell your data, and we do not use it to build advertising profiles.</p>
+      <p>Of these, the IP address, the derived session key, the API-key fingerprint and the contact email are personal
+      information or can identify you in combination; the other fields describe the request, not you. We do not store the
+      contents of responses we send you. Visiting <code>oneqaz.com</code> does not send us any personal information (see
+      sections 06 and 08).</p>
     </section>
 
     <section id="en-retention">
-      <h2><span class="num">03</span>Storage &amp; retention</h2>
-      <p>Request logs are stored on infrastructure operated by OneQAZ, including internal analytics copies.</p>
+      <h2><span class="num">03</span>Retention period</h2>
       <ul>
-        <li><strong>IP addresses</strong>, and the session key derived from them, are kept for up to
-        <strong>12 months</strong>. After that they are irreversibly replaced using a one-way transformation whose random
-        key is discarded after each run, so the remaining records can no longer be linked to an IP address.</li>
-        <li>The rest of each request record (tool name, whitelisted parameters, outcome, client and protocol metadata) is
-        kept as usage history. Once the IP-derived fields are replaced it no longer identifies you, except that requests
-        made with an API key remain attributable to that key.</li>
-        <li>If you were issued an API key, the contact email attached to it is kept while the key is issued to you. You can
-        ask us to delete it at any time.</li>
+        <li><strong>IP address and derived session key</strong> — up to <strong>12 months</strong> from the request.</li>
+        <li><strong>Other request fields</strong> — kept as usage history. Once the IP-derived fields are replaced they no
+        longer identify you, except that requests made with an API key remain attributable to that key while its contact
+        email exists.</li>
+        <li><strong>Contact email of an API-key holder</strong> — until the key is revoked or you ask us to delete it.</li>
+        <li><strong>Database backups</strong> — rotated and deleted within about four weeks.</li>
+      </ul>
+      <p>If another law requires us to keep data for longer, we keep only the items it requires, for the period it requires,
+      separately from other data.</p>
+    </section>
+
+    <section id="en-destruction">
+      <h2><span class="num">04</span>Destruction procedure and method</h2>
+      <ul>
+        <li><strong>Procedure</strong> — when the retention period ends, IP addresses and session keys are irreversibly
+        replaced by a processing job using a one-way transformation whose random key is discarded after each run, so the
+        records can no longer be linked to an IP address. Contact emails are deleted without delay when the key is revoked or
+        on your request.</li>
+        <li><strong>Method</strong> — electronic records are deleted or overwritten so that they cannot be restored or
+        reproduced. We keep no paper records.</li>
       </ul>
     </section>
 
-    <section id="en-sharing">
-      <h2><span class="num">04</span>Third-party sharing</h2>
-      <p>We do not share request data with third parties for their own purposes. Network traffic is routed through
-      Cloudflare (CDN / DDoS protection) as a data processor. The market data we return is derived from public market
-      sources and our own analysis.</p>
+    <section id="en-thirdparty">
+      <h2><span class="num">05</span>Provision to third parties</h2>
+      <p>We do not provide personal information to third parties. The only exception is where the law requires it — for
+      example, a lawful request from an investigative authority with a warrant (PIPA Arts. 17–18).</p>
+    </section>
+
+    <section id="en-transfer">
+      <h2><span class="num">06</span>Outsourcing and overseas transfer</h2>
+      <p>We entrust the following providers with processing that is necessary to deliver the service over the internet,
+      which involves transfer outside Korea. We disclose the details here under PIPA Art. 28-8(1)(3).</p>
+      <dl class="fields">
+        <div class="field"><dt>Cloudflare, Inc.</dt><dd><strong>Task</strong> CDN, DDoS protection and secure tunnel (TLS
+        termination) for <code>api.oneqaz.com</code> · <strong>Country</strong> United States, and the countries of Cloudflare's
+        global data-center network · <strong>Items</strong> IP address, request headers (incl. user-agent) and request contents
+        in transit · <strong>When &amp; how</strong> over the network, each time you call the API · <strong>Retention</strong>
+        per Cloudflare's processing terms · <strong>Contact</strong> privacyquestions@cloudflare.com, 101 Townsend St.,
+        San Francisco, CA 94107, USA</dd></div>
+        <div class="field"><dt>GitHub, Inc.</dt><dd><strong>Task</strong> hosting the <code>oneqaz.com</code> website
+        (GitHub Pages) · <strong>Country</strong> United States · <strong>Items</strong> IP address and browser information of
+        website visitors · <strong>When &amp; how</strong> over the network, each time you visit the website ·
+        <strong>Retention</strong> per GitHub's policies · <strong>Contact</strong> privacy@github.com, 88 Colin P. Kelly Jr.
+        St., San Francisco, CA 94107, USA</dd></div>
+        <div class="field"><dt>BunnyWay d.o.o. (Bunny Fonts)</dt><dd><strong>Task</strong> delivering the web fonts used on
+        our pages · <strong>Country</strong> Slovenia (EU), and the countries of its CDN · <strong>Items</strong> IP address
+        and browser information · <strong>When &amp; how</strong> over the network, when your browser loads the fonts ·
+        <strong>Retention</strong> per Bunny's policies · <strong>Contact</strong> support@bunny.net, Dunajska cesta 165,
+        1000 Ljubljana, Slovenia</dd></div>
+      </dl>
+      <p><strong>How to refuse.</strong> These transfers are needed to deliver the API and the website over the internet, so
+      to refuse them you need to stop using the API or visiting the website; neither can be provided without them. If your
+      browser blocks web fonts, the pages still work with system fonts.</p>
+      <p>When you reach OneQAZ through an AI client, the AI platform you chose handles your request under its own policy;
+      that is not a transfer made by OneQAZ.</p>
+    </section>
+
+    <section id="en-security">
+      <h2><span class="num">07</span>Security measures</h2>
+      <ul>
+        <li><strong>Administrative</strong> — access to personal information is limited to the operator.</li>
+        <li><strong>Technical</strong> — encrypted transport (HTTPS/TLS); the database is not exposed to the internet and is
+        reachable only from our internal network; separate database roles per service; API keys are never written to request
+        logs (one-way fingerprint only); only a whitelisted summary of arguments is stored; IP addresses are irreversibly
+        replaced after 12 months.</li>
+        <li><strong>Physical</strong> — servers and storage are kept at a location managed directly by the operator.</li>
+      </ul>
+    </section>
+
+    <section id="en-cookies">
+      <h2><span class="num">08</span>Automatic collection devices (cookies)</h2>
+      <ul>
+        <li>We do not use cookies, analytics, advertising or tracking scripts, and we do not collect behavioural information
+        for targeted advertising.</li>
+        <li>The website remembers your language choice (<code>oqz-lang</code>) in your browser's local storage only; it is
+        never sent to us. You can remove it by clearing this site's data in your browser.</li>
+      </ul>
+    </section>
+
+    <section id="en-rights">
+      <h2><span class="num">09</span>Your rights and how to exercise them</h2>
+      <ul>
+        <li>You may request access to, correction or deletion of, or suspension of processing of your personal information
+        (PIPA Arts. 35–37). Where the GDPR applies, you may also object to processing and request restriction or
+        portability.</li>
+        <li>Send requests to <a href="mailto:contact@oneqaz.com">contact@oneqaz.com</a>. A legal representative or an
+        authorised agent may act for you with a power of attorney.</li>
+        <li>Because request logs are not tied to accounts, please include the IP address and approximate time of your
+        requests, or the API key concerned (you may send its SHA-256 fingerprint instead of the key itself), so that we can
+        find the records.</li>
+        <li>We respond within 10 days. Where the law allows us to limit a request (for example, where another law requires
+        retention or it would harm someone else's rights), we will tell you the reason.</li>
+        <li>If you are in the EU/EEA or the UK, you may also lodge a complaint with your local data-protection authority.</li>
+      </ul>
+    </section>
+
+    <section id="en-officer">
+      <h2><span class="num">10</span>Privacy officer</h2>
+      <dl class="fields">
+        <div class="field"><dt>Department</dt><dd>OneQAZ Privacy Office — responsible for personal information protection,
+        access requests and complaints</dd></div>
+        <div class="field"><dt>Contact</dt><dd><a href="mailto:contact@oneqaz.com">contact@oneqaz.com</a></dd></div>
+      </dl>
+    </section>
+
+    <section id="en-remedies">
+      <h2><span class="num">11</span>Remedies for infringement</h2>
+      <p>You can seek dispute mediation or advice from the following Korean bodies, which are independent of OneQAZ:</p>
+      <ul>
+        <li>Personal Information Dispute Mediation Committee — 1833-6972 · <a href="https://www.kopico.go.kr" target="_blank" rel="noopener">www.kopico.go.kr</a></li>
+        <li>Personal Information Infringement Report Center (KISA) — 118 · <a href="https://privacy.kisa.or.kr" target="_blank" rel="noopener">privacy.kisa.or.kr</a></li>
+        <li>Supreme Prosecutors' Office — 1301 · <a href="https://www.spo.go.kr" target="_blank" rel="noopener">www.spo.go.kr</a></li>
+        <li>Korean National Police Agency — 182 · <a href="https://ecrm.police.go.kr" target="_blank" rel="noopener">ecrm.police.go.kr</a></li>
+      </ul>
     </section>
 
     <section id="en-ai">
-      <h2><span class="num">05</span>AI client disclosure</h2>
-      <p>When an AI client (such as Claude, ChatGPT, or Gemini) calls OneQAZ on your behalf, your request reaches us
-      through that client's platform. Every response carries <code>disclaimer</code>,
-      <code>is_investment_advice=false</code>, and <code>data_classification=research_information_only</code>.</p>
+      <h2><span class="num">12</span>AI client disclosure</h2>
+      <p>When an AI client (such as Claude, ChatGPT, or Gemini) calls OneQAZ on your behalf, your request reaches us through
+      that client's platform. Every response carries <code>disclaimer</code>, <code>is_investment_advice=false</code>, and
+      <code>data_classification=research_information_only</code>.</p>
     </section>
 
-    <section id="en-choices">
-      <h2><span class="num">06</span>Your choices</h2>
-      <p>Because we do not maintain user accounts, the simplest way to stop data processing is to stop calling the
-      service. For questions or requests (including deletion) about data associated with your IP address or API key,
-      contact us below.</p>
+    <section id="en-na">
+      <h2><span class="num">13</span>Not applicable</h2>
+      <ul>
+        <li>We do not process sensitive information or unique identifiers such as resident registration numbers.</li>
+        <li>The service is not directed at children under 14, and we do not knowingly collect their information.</li>
+        <li>We do not process pseudonymised information under PIPA's special provisions, and we make no automated decisions
+        that affect your rights.</li>
+      </ul>
     </section>
 
     <section id="en-changes">
-      <h2><span class="num">07</span>Changes</h2>
-      <p>We may update this policy. Material changes are reflected by the "Last updated" date above.</p>
-    </section>
-
-    <section id="en-contact">
-      <h2><span class="num">08</span>Contact</h2>
-      <p>Questions about this policy or your data: <a href="mailto:contact@oneqaz.com">contact@oneqaz.com</a></p>
+      <h2><span class="num">14</span>Changes</h2>
+      <p>This policy takes effect on 2026-10-07. We announce changes by updating the date above; previous versions are
+      available in the <a href="https://github.com/wnsod/oneqaz/commits/main/privacy.html" target="_blank" rel="noopener">public
+      change history</a>.</p>
     </section>
   </div>
 
@@ -839,26 +949,45 @@ body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4
 <article data-l="ko" lang="ko">
   <div class="section-label">법적 고지</div>
   <h1 class="section-title">개인정보 처리방침</h1>
-  <p class="section-desc">OneQAZ 트레이딩 인텔리전스 — MCP 서버 &amp; API</p>
+  <p class="section-desc">OneQAZ 트레이딩 인텔리전스 — MCP 서버, API 및 웹사이트</p>
   <div class="doc-meta">최종 수정 2026-10-07 · 시행 2026-10-07</div>
 
   <div class="toc">
-    <a href="#ko-collect">수집 정보</a><a href="#ko-use">이용 목적</a><a href="#ko-retention">보관</a>
-    <a href="#ko-sharing">제3자 제공</a><a href="#ko-ai">AI 클라이언트</a><a href="#ko-choices">이용자 선택</a>
-    <a href="#ko-changes">변경</a><a href="#ko-contact">연락처</a>
+    <a href="#ko-purpose">처리 목적</a><a href="#ko-items">처리 항목</a><a href="#ko-retention">보유 기간</a>
+    <a href="#ko-destruction">파기</a><a href="#ko-thirdparty">제3자 제공</a><a href="#ko-transfer">위탁·국외 이전</a>
+    <a href="#ko-security">안전성 확보</a><a href="#ko-cookies">쿠키</a><a href="#ko-rights">이용자 권리</a>
+    <a href="#ko-officer">보호책임자</a><a href="#ko-remedies">권익침해 구제</a><a href="#ko-ai">AI 클라이언트</a>
+    <a href="#ko-na">해당 없음</a><a href="#ko-changes">변경</a>
   </div>
 
-  <p class="lead">OneQAZ는 Model Context Protocol(MCP)과 HTTP API를 통해 AI 클라이언트에게 라이브 시장 정보(암호화폐·국내주식·미국주식)를
-  제공하는 리서치 정보 서비스입니다. 본 방침은 이용자(또는 이용자를 대신하는 AI 클라이언트)가 <code>api.oneqaz.com</code>에 연결할 때
-  처리되는 데이터를 설명합니다.</p>
+  <p class="lead">OneQAZ(이하 "OneQAZ")는 Model Context Protocol(MCP)과 HTTP API를 통해 AI 클라이언트에게 라이브 시장 정보
+  (암호화폐·국내주식·미국주식)를 제공하는 리서치 정보 서비스입니다. 본 방침은 이용자(또는 이용자를 대신하는 AI 클라이언트)가
+  <code>api.oneqaz.com</code>을 이용하거나 <code>oneqaz.com</code>을 방문할 때 개인정보를 어떻게 처리하는지 설명하며,
+  「개인정보 보호법」에 따라 작성되었습니다. OneQAZ의 자체 서버는 대한민국에 있습니다.</p>
 
   <div class="note"><strong>투자 권유가 아닙니다.</strong> OneQAZ의 결과물은 페이퍼 트레이딩 기반 리서치 신호이며, 매수·매도를
   권유하지 않습니다. OneQAZ는 매매를 실행하거나 자금을 보관하거나 금융 거래를 받지 않습니다.</div>
 
   <div class="policy">
-    <section id="ko-collect">
-      <h2><span class="num">01</span>수집하는 정보</h2>
-      <p>회원 계정을 요구하지 <strong>않으며</strong>, 호출자의 이름·이메일·결제 정보를 수집하지 않습니다. 요청마다 다음을 기록합니다.</p>
+    <section id="ko-purpose">
+      <h2><span class="num">01</span>개인정보의 처리 목적 및 근거</h2>
+      <ul>
+        <li>서비스 운영·보안(요청 수 제한, 남용 방지, 디버깅).</li>
+        <li>클라이언트·프로토콜 호환성 문제 진단.</li>
+        <li>제품 개선을 위한 집계 사용량 측정(어떤 tool 이 어떤 클라이언트에서 호출되는지).</li>
+        <li>접근 등급 적용, API 키별 사용량 집계, 이용자가 요청한 API 키의 발급·관리.</li>
+      </ul>
+      <p>OneQAZ는 회원가입이나 동의 절차 없이 서비스를 제공합니다. 요청 로그는 서비스 운영·보안이라는 정당한 이익을 달성하기 위해
+      합리적으로 필요한 범위에서 「개인정보 보호법」 제15조 제1항 제6호에 근거하여 처리합니다. API 키 보유자의 연락 이메일은 이용자가
+      요청한 키를 발급·관리하기 위해 같은 조 제1항 제4호에 근거하여 처리합니다.</p>
+      <p>개인정보를 판매하거나 광고 프로필을 만들지 <strong>않으며</strong>, 요청 로그를 AI 모델 학습이나 이용자에 대한 자동화된 결정에
+      사용하지 않습니다.</p>
+    </section>
+
+    <section id="ko-items">
+      <h2><span class="num">02</span>처리하는 개인정보 항목</h2>
+      <p>회원 계정을 요구하지 <strong>않으며</strong>, 이름·결제 정보를 수집하지 않습니다. <code>api.oneqaz.com</code>에 대한 요청마다
+      다음 정보가 자동으로 생성·기록됩니다.</p>
       <dl class="fields">
         <div class="field"><dt>IP 주소</dt><dd>요청 수 제한, 남용 방지, 지역 라우팅. Cloudflare를 거친 요청은 Cloudflare가 전달한 클라이언트
         주소입니다.</dd></div>
@@ -867,69 +996,146 @@ body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4
         <div class="field"><dt>결과 메타데이터</dt><dd>성공·실패, HTTP 상태, JSON-RPC 오류 코드, 짧은 오류 설명(최대 200자 — 검증 오류가 되돌려
         보낸 입력값은 가림), 응답 시간(ms), 결과 형태(반환 행 수, 전체 건수, 잘림·빈 결과 여부).</dd></div>
         <div class="field"><dt>파생 세션 키</dt><dd>IP + user-agent + 30분 구간의 해시. 이용자 기기에 쿠키나 기타 영구 식별자를 남기지 않습니다.</dd></div>
-        <div class="field"><dt>API 키(제공한 경우)</dt><dd>요청 한도 등급과 접근 수준 판정에 사용합니다. 키별 사용량을 집계할 수 있도록 요청마다
-        판정된 등급과 키의 단방향 지문(SHA-256 해시 앞 16자리)을 기록합니다. 키 자체는 요청 로그에 기록하지 않습니다.</dd></div>
-        <div class="field"><dt>허용 목록 요청 인자</dt><dd>수요 집계를 위해 tool 인자의 제한된 요약(<code>symbol</code>, <code>market</code>,
-        <code>interval</code>, <code>category</code>, 기간, 결과 개수, 식별자 등)과 <code>search</code> 도구의 검색어(최대 60자)를 기록합니다.
+        <div class="field"><dt>API 키(제공한 경우)</dt><dd>요청 한도 등급과 접근 수준 판정에 사용합니다. 요청마다 판정된 등급과 키의 단방향
+        지문(SHA-256 해시 앞 16자리)을 기록합니다. 키 자체는 요청 로그에 기록하지 않습니다.</dd></div>
+        <div class="field"><dt>허용 목록 요청 인자</dt><dd>tool 인자의 제한된 요약(<code>symbol</code>, <code>market</code>,
+        <code>interval</code>, <code>category</code>, 기간, 결과 개수, 식별자 등)과 <code>search</code> 도구의 검색어(최대 60자).
         인자 없이 호출한 경우 그 사실만 기록합니다. 허용 목록 밖의 인자 내용은 저장하지 <strong>않습니다</strong>.</dd></div>
         <div class="field"><dt>MCP 클라이언트·프로토콜 메타데이터</dt><dd><code>initialize</code> 때 보낸 클라이언트 이름·버전
-        (<code>clientInfo</code>), MCP 프로토콜 버전(<code>MCP-Protocol-Version</code> 헤더 또는 <code>initialize</code> 요청),
-        <code>Accept</code> 헤더(앞 200자), 클라이언트가 보낸 경우 프로토콜 세션 ID 헤더, 세션 내 호출 순서, 요청·응답 크기.</dd></div>
+        (<code>clientInfo</code>), MCP 프로토콜 버전, <code>Accept</code> 헤더(앞 200자), 클라이언트가 보낸 경우 프로토콜 세션 ID
+        헤더, 세션 내 호출 순서, 요청·응답 크기.</dd></div>
         <div class="field"><dt>트래픽 분류</dt><dd>집계 통계를 정직하게 유지하기 위한 파생 라벨(크롤러 / 운영자 자체 점검 / 외부).</dd></div>
+        <div class="field"><dt>연락 이메일(API 키 보유자만)</dt><dd>API 키를 신청할 때 이용자가 제공합니다.</dd></div>
       </dl>
-      <p>이용자에게 보낸 응답 본문은 저장하지 않습니다.</p>
-    </section>
-
-    <section id="ko-use">
-      <h2><span class="num">02</span>이용 목적</h2>
-      <ul>
-        <li>서비스 운영·보안(요청 수 제한, 남용 방지, 디버깅).</li>
-        <li>클라이언트·프로토콜 호환성 문제 진단.</li>
-        <li>제품 개선을 위한 집계 사용량 측정(어떤 tool 이 어떤 클라이언트에서 호출되는지).</li>
-        <li>접근 등급 적용 및 API 키별 사용량 집계.</li>
-      </ul>
-      <p>데이터를 판매하거나 광고 프로필을 만드는 데 사용하지 <strong>않습니다</strong>.</p>
+      <p>이 중 IP 주소, 파생 세션 키, API 키 지문, 연락 이메일은 개인정보이거나 다른 정보와 결합하여 이용자를 식별할 수 있는 정보이며,
+      나머지는 이용자가 아니라 요청을 설명하는 정보입니다. 이용자에게 보낸 응답 본문은 저장하지 않습니다. <code>oneqaz.com</code>
+      방문만으로 OneQAZ에 전달되는 개인정보는 없습니다(06·08 참조).</p>
     </section>
 
     <section id="ko-retention">
-      <h2><span class="num">03</span>저장 및 보관</h2>
-      <p>요청 로그는 OneQAZ가 운영하는 인프라(내부 분석용 사본 포함)에 저장됩니다.</p>
+      <h2><span class="num">03</span>개인정보의 처리 및 보유 기간</h2>
       <ul>
-        <li><strong>IP 주소</strong>와 IP에서 파생된 세션 키는 <strong>최대 12개월</strong> 보관합니다. 이후에는 실행마다 폐기되는 임의 키를
-        사용한 단방향 변환으로 비가역 치환해, 남은 기록을 IP 주소와 연결할 수 없게 합니다.</li>
-        <li>나머지 기록(tool 이름, 허용 목록 인자, 결과, 클라이언트·프로토콜 메타데이터)은 사용 이력으로 보관합니다. IP 파생 항목이 치환된
-        뒤에는 이용자를 식별하지 않으며, 다만 API 키로 한 요청은 해당 키에 귀속된 채로 남습니다.</li>
-        <li>API 키를 발급받은 경우, 키에 연결된 연락 이메일은 키가 발급돼 있는 동안 보관합니다. 언제든 삭제를 요청할 수 있습니다.</li>
+        <li><strong>IP 주소와 파생 세션 키</strong> — 요청일로부터 <strong>최대 12개월</strong>.</li>
+        <li><strong>그 밖의 요청 기록</strong> — 사용 이력으로 보관합니다. IP 파생 항목이 치환된 뒤에는 이용자를 식별하지 않으며, 다만 API 키로
+        한 요청은 그 키의 연락 이메일이 남아 있는 동안 해당 키에 귀속됩니다.</li>
+        <li><strong>API 키 보유자의 연락 이메일</strong> — 키를 폐기하거나 이용자가 삭제를 요청할 때까지.</li>
+        <li><strong>데이터베이스 백업</strong> — 순환 방식으로 약 4주 이내에 삭제됩니다.</li>
+      </ul>
+      <p>다른 법령이 더 오래 보존하도록 정한 경우에는 그 법령이 정한 항목만, 정한 기간 동안 다른 정보와 분리하여 보관합니다.</p>
+    </section>
+
+    <section id="ko-destruction">
+      <h2><span class="num">04</span>개인정보의 파기 절차 및 방법</h2>
+      <ul>
+        <li><strong>파기 절차</strong> — 보유 기간이 지난 IP 주소와 세션 키는 실행마다 폐기되는 임의 키를 쓴 단방향 변환 작업으로 비가역
+        치환하여, 기록을 IP 주소와 연결할 수 없게 합니다. 연락 이메일은 키를 폐기하거나 이용자가 요청하면 지체 없이 삭제합니다.</li>
+        <li><strong>파기 방법</strong> — 전자적 파일 형태의 정보는 복구·재생할 수 없도록 삭제하거나 덮어씁니다. 종이 문서는 보관하지 않습니다.</li>
       </ul>
     </section>
 
-    <section id="ko-sharing">
-      <h2><span class="num">04</span>제3자 제공</h2>
-      <p>요청 데이터를 제3자의 자체 목적으로 제공하지 않습니다. 네트워크 트래픽은 데이터 처리자인 Cloudflare(CDN·DDoS 방어)를 거칩니다.
-      응답으로 제공하는 시장 데이터는 공개 시장 자료와 OneQAZ의 자체 분석에서 나옵니다.</p>
+    <section id="ko-thirdparty">
+      <h2><span class="num">05</span>개인정보의 제3자 제공</h2>
+      <p>OneQAZ는 개인정보를 제3자에게 제공하지 않습니다. 다만 수사기관이 영장 등 법령에 따른 절차로 요청하는 경우처럼 법률에 특별한 규정이
+      있는 경우는 예외로 합니다(「개인정보 보호법」 제17조·제18조).</p>
+    </section>
+
+    <section id="ko-transfer">
+      <h2><span class="num">06</span>개인정보 처리의 위탁 및 국외 이전</h2>
+      <p>OneQAZ는 인터넷으로 서비스를 제공하는 데 필요한 처리를 아래 업체에 위탁하며, 이 과정에서 개인정보가 국외로 이전됩니다.
+      「개인정보 보호법」 제28조의8 제1항 제3호에 따라 그 내용을 여기에 공개합니다.</p>
+      <dl class="fields">
+        <div class="field"><dt>Cloudflare, Inc.</dt><dd><strong>위탁 업무</strong> <code>api.oneqaz.com</code>의 CDN, DDoS 방어,
+        보안 터널(TLS 종단) · <strong>이전 국가</strong> 미국 및 Cloudflare 글로벌 데이터센터 소재 국가 · <strong>이전 항목</strong> IP 주소,
+        요청 헤더(user-agent 포함), 전송 중인 요청 내용 · <strong>이전 시기·방법</strong> API 호출 시마다 네트워크로 전송 ·
+        <strong>보유 기간</strong> Cloudflare 처리 약관에 따름 · <strong>연락처</strong> privacyquestions@cloudflare.com, 101 Townsend
+        St., San Francisco, CA 94107, USA</dd></div>
+        <div class="field"><dt>GitHub, Inc.</dt><dd><strong>위탁 업무</strong> <code>oneqaz.com</code> 웹사이트 호스팅(GitHub Pages) ·
+        <strong>이전 국가</strong> 미국 · <strong>이전 항목</strong> 웹사이트 방문자의 IP 주소와 브라우저 정보 · <strong>이전 시기·방법</strong>
+        웹사이트 방문 시마다 네트워크로 전송 · <strong>보유 기간</strong> GitHub 정책에 따름 · <strong>연락처</strong> privacy@github.com,
+        88 Colin P. Kelly Jr. St., San Francisco, CA 94107, USA</dd></div>
+        <div class="field"><dt>BunnyWay d.o.o. (Bunny Fonts)</dt><dd><strong>위탁 업무</strong> 페이지에 쓰는 웹 글꼴 제공 ·
+        <strong>이전 국가</strong> 슬로베니아(EU) 및 CDN 소재 국가 · <strong>이전 항목</strong> IP 주소와 브라우저 정보 ·
+        <strong>이전 시기·방법</strong> 브라우저가 글꼴을 불러올 때 네트워크로 전송 · <strong>보유 기간</strong> Bunny 정책에 따름 ·
+        <strong>연락처</strong> support@bunny.net, Dunajska cesta 165, 1000 Ljubljana, Slovenia</dd></div>
+      </dl>
+      <p><strong>거부 방법과 효과.</strong> 위 이전은 API와 웹사이트를 인터넷으로 제공하는 데 필요하므로, 거부하려면 API 이용이나 웹사이트
+      방문을 중단해야 하며 이 경우 서비스를 이용할 수 없습니다. 브라우저에서 웹 글꼴을 차단해도 페이지는 기본 글꼴로 정상 이용할 수 있습니다.</p>
+      <p>AI 클라이언트를 통해 OneQAZ를 이용하는 경우, 이용자가 선택한 AI 플랫폼이 자체 방침에 따라 요청을 처리하며 이는 OneQAZ가 하는 국외
+      이전이 아닙니다.</p>
+    </section>
+
+    <section id="ko-security">
+      <h2><span class="num">07</span>개인정보의 안전성 확보 조치</h2>
+      <ul>
+        <li><strong>관리적 조치</strong> — 개인정보에 대한 접근 권한을 운영자로 제한합니다.</li>
+        <li><strong>기술적 조치</strong> — 전송 구간 암호화(HTTPS/TLS), 데이터베이스는 인터넷에 노출하지 않고 내부망에서만 접근,
+        서비스별 데이터베이스 계정 분리, API 키는 요청 로그에 원문 대신 단방향 지문만 기록, 요청 인자는 허용 목록 요약만 저장,
+        12개월이 지난 IP 주소는 비가역 치환.</li>
+        <li><strong>물리적 조치</strong> — 서버와 저장장치는 운영자가 직접 관리하는 장소에 둡니다.</li>
+      </ul>
+    </section>
+
+    <section id="ko-cookies">
+      <h2><span class="num">08</span>개인정보 자동 수집 장치의 설치·운영 및 거부</h2>
+      <ul>
+        <li>쿠키, 방문 분석, 광고·추적 스크립트를 사용하지 않으며, 맞춤형 광고를 위한 행태정보를 수집하지 않습니다.</li>
+        <li>웹사이트는 언어 선택(<code>oqz-lang</code>)을 이용자 브라우저의 로컬 저장소에만 기억하며 OneQAZ로 전송하지 않습니다. 브라우저에서
+        이 사이트의 데이터를 지우면 삭제됩니다.</li>
+      </ul>
+    </section>
+
+    <section id="ko-rights">
+      <h2><span class="num">09</span>정보주체의 권리·의무 및 행사 방법</h2>
+      <ul>
+        <li>이용자는 언제든지 개인정보의 열람, 정정·삭제, 처리정지를 요구할 수 있습니다(「개인정보 보호법」 제35조~제37조).</li>
+        <li>요구는 <a href="mailto:contact@oneqaz.com">contact@oneqaz.com</a>으로 보내 주십시오. 법정대리인이나 위임을 받은 대리인을 통해서도
+        할 수 있으며, 이 경우 위임장을 제출해야 합니다.</li>
+        <li>요청 로그는 계정과 연결되어 있지 않으므로, 기록을 찾을 수 있도록 요청에 사용한 IP 주소와 대략적인 이용 시간, 또는 해당 API 키
+        (키 대신 SHA-256 지문을 보내도 됩니다)를 함께 알려 주십시오.</li>
+        <li>요구를 받은 날부터 10일 이내에 처리 결과를 알려 드립니다. 다른 법령에 따라 보존해야 하거나 다른 사람의 권리를 침해할 우려가 있는 등
+        법령상 제한 사유가 있는 경우에는 그 사유를 알려 드립니다.</li>
+      </ul>
+    </section>
+
+    <section id="ko-officer">
+      <h2><span class="num">10</span>개인정보 보호책임자</h2>
+      <dl class="fields">
+        <div class="field"><dt>담당 부서</dt><dd>OneQAZ 개인정보 보호 담당 — 개인정보 보호 업무, 열람 청구 접수·처리, 고충 처리</dd></div>
+        <div class="field"><dt>연락처</dt><dd><a href="mailto:contact@oneqaz.com">contact@oneqaz.com</a></dd></div>
+      </dl>
+    </section>
+
+    <section id="ko-remedies">
+      <h2><span class="num">11</span>권익침해 구제 방법</h2>
+      <p>개인정보 침해로 인한 구제를 받기 위해 아래 기관에 분쟁 조정이나 상담을 신청할 수 있습니다. 이 기관들은 OneQAZ와 별개의 기관입니다.</p>
+      <ul>
+        <li>개인정보분쟁조정위원회 — 1833-6972 · <a href="https://www.kopico.go.kr" target="_blank" rel="noopener">www.kopico.go.kr</a></li>
+        <li>개인정보침해신고센터(한국인터넷진흥원) — (국번 없이) 118 · <a href="https://privacy.kisa.or.kr" target="_blank" rel="noopener">privacy.kisa.or.kr</a></li>
+        <li>대검찰청 — (국번 없이) 1301 · <a href="https://www.spo.go.kr" target="_blank" rel="noopener">www.spo.go.kr</a></li>
+        <li>경찰청 — (국번 없이) 182 · <a href="https://ecrm.police.go.kr" target="_blank" rel="noopener">ecrm.police.go.kr</a></li>
+      </ul>
     </section>
 
     <section id="ko-ai">
-      <h2><span class="num">05</span>AI 클라이언트 고지</h2>
+      <h2><span class="num">12</span>AI 클라이언트 고지</h2>
       <p>AI 클라이언트(Claude, ChatGPT, Gemini 등)가 이용자를 대신해 OneQAZ를 호출하면, 요청은 해당 클라이언트의 플랫폼을 거쳐 도달합니다.
       모든 응답에는 <code>disclaimer</code>, <code>is_investment_advice=false</code>,
       <code>data_classification=research_information_only</code> 가 포함됩니다.</p>
     </section>
 
-    <section id="ko-choices">
-      <h2><span class="num">06</span>이용자의 선택</h2>
-      <p>회원 계정을 운영하지 않으므로, 데이터 처리를 멈추는 가장 간단한 방법은 서비스 호출을 중단하는 것입니다. 본인 IP 주소나 API 키와
-      관련된 데이터에 대한 문의나 요청(삭제 포함)은 아래 연락처로 보내 주십시오.</p>
+    <section id="ko-na">
+      <h2><span class="num">13</span>해당하지 않는 사항</h2>
+      <ul>
+        <li>민감정보와 주민등록번호 등 고유식별정보를 처리하지 않습니다.</li>
+        <li>만 14세 미만 아동을 대상으로 하는 서비스가 아니며, 아동의 개인정보를 알면서 수집하지 않습니다.</li>
+        <li>「개인정보 보호법」의 가명정보 처리 특례를 이용하지 않으며, 이용자의 권리에 영향을 미치는 자동화된 결정을 하지 않습니다.</li>
+      </ul>
     </section>
 
     <section id="ko-changes">
-      <h2><span class="num">07</span>방침 변경</h2>
-      <p>본 방침은 변경될 수 있으며, 중요한 변경은 상단의 "최종 수정" 날짜로 표시합니다.</p>
-    </section>
-
-    <section id="ko-contact">
-      <h2><span class="num">08</span>연락처</h2>
-      <p>본 방침 또는 이용자 데이터에 관한 문의: <a href="mailto:contact@oneqaz.com">contact@oneqaz.com</a></p>
+      <h2><span class="num">14</span>개인정보 처리방침의 변경</h2>
+      <p>본 방침은 2026년 10월 7일부터 시행합니다. 변경 사항은 상단의 날짜를 갱신하여 알리며, 이전 처리방침은
+      <a href="https://github.com/wnsod/oneqaz/commits/main/privacy.html" target="_blank" rel="noopener">공개 변경 이력</a>에서 확인할 수 있습니다.</p>
     </section>
   </div>
 

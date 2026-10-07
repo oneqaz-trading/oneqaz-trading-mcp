@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oneqaz-trading-mcp"
-version = "0.4.3"
+version = "0.4.4"
 description = "MCP server for trading signal analysis, position monitoring, market regime detection, and Trust Layer (B2AI credibility verification)"
 readme = "README.md"
 license = {text = "MIT"}

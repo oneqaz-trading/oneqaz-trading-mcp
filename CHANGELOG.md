@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.4] - 2026-10-07
+
+### Changed — privacy policy completeness (Korea PIPA)
+
+- `/privacy` now carries the items required by Korea's Personal Information Protection Act
+  (Art. 30, Enforcement Decree Art. 31) and the PIPC 2025.4 drafting guideline, in English and
+  Korean: legal basis, per-item retention (incl. backups), destruction procedure and method,
+  provision to third parties, outsourcing and overseas transfer (Cloudflare, GitHub Pages,
+  Bunny Fonts — task, country, items, timing, retention, contact, how to refuse), security
+  measures, automatic collection devices (no cookies), data-subject rights and how to exercise
+  them, privacy officer, remedies for infringement, and items that do not apply.
+- `PRIVACY.md` §1 is now a summary table that links to the full hosted policy.
+- No other code changes.
+
 ## [0.4.3] - 2026-10-07
 
 ### Changed — `/privacy` page design
