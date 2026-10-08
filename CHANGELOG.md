@@ -19,12 +19,17 @@ Hosted-page sync only — the mirrored server code is unchanged (no monorepo syn
   users can enter their key on the same screen.
 - `PRIVACY.md`: summary updated to match.
 
+## [0.4.5] - 2026-10-09
+
+Docs/metadata release plus the two hosted-page fixes below. The mirrored server code is otherwise
+unchanged from 0.4.4 (no monorepo sync in this release).
+
 ### Fixed
 
 - `/privacy`: the page body is wrapped in `<!--email_off-->` so Cloudflare Email Address
   Obfuscation no longer replaces the privacy-officer and processor contact addresses with
   "[email protected]" for readers without JavaScript. No effect when the page is not served
-  through Cloudflare. Ships with the next release.
+  through Cloudflare.
 - `/terms`: replaced the 2026-07-08 Terms of Use with the Terms of Service published at
   <https://oneqaz.com/terms> (byte-identical; EN/KO; site design). The live-only clauses are kept
   (derived analytics / no market-data licence, no reconstruction, no redistribution, fees & metering,
@@ -36,8 +41,8 @@ Hosted-page sync only — the mirrored server code is unchanged (no monorepo syn
 - `server.json` merged with the monorepo copy and bumped to server version `1.2.0` (the registry's current
   latest is `1.0.0` from 2026-04-07; a lower version would not become latest): adds the hosted
   `streamable-http` remote (`https://api.oneqaz.com/mcp`, optional `X-API-Key`) and `websiteUrl`, keeps the
-  PyPI package entry (`0.4.4`, PostgreSQL env vars), new description. Validated against the
-  2025-12-11 server schema. Not yet published.
+  PyPI package entry (now `0.4.5`, PostgreSQL env vars), new description. Validated against the
+  2025-12-11 server schema.
 
 ### Documentation
 
