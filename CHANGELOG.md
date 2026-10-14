@@ -6,6 +6,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+Hosted-page sync only — the mirrored server code is unchanged (no monorepo sync).
+
+### Changed
+
+- `/privacy`: now the hosted policy effective 2026-10-14, byte-identical to <https://oneqaz.com/privacy>
+  (site design; EN/KO). It adds the 2026-10-08 optional AI-app account connection (OAuth) and the
+  2026-10-14 "Connect free" option — an AI app can connect on the free plan without an API key; such
+  accounts are linked to no key or personal details and are deleted automatically once no connection
+  remains. The page previously served the 2026-10-07 text.
+- `/keys`: explains connecting from AI apps — choose **Connect free** on the OneQAZ connect screen; Pro
+  users can enter their key on the same screen.
+- `PRIVACY.md`: summary updated to match.
+
 ### Fixed
 
 - `/privacy`: the page body is wrapped in `<!--email_off-->` so Cloudflare Email Address

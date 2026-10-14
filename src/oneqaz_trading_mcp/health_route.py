@@ -569,7 +569,8 @@ _PRIVACY_HTML = """<!DOCTYPE html>
 <meta name="description" content="OneQAZ privacy policy (MCP server, API, website) — items, purposes and legal basis, retention, destruction, outsourcing and overseas transfer, rights, privacy officer. 개인정보 처리방침.">
 <meta name="robots" content="index,follow">
 <link rel="canonical" href="https://oneqaz.com/privacy">
-<link rel="icon" href="https://oneqaz.com/images/logo.png" type="image/png">
+<link rel="icon" href="https://oneqaz.com/images/opt/favicon-64.png" type="image/png">
+<link rel="apple-touch-icon" href="https://oneqaz.com/images/opt/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.bunny.net">
 <link href="https://fonts.bunny.net/css?family=outfit:300,400,500,600,700|noto-sans-kr:300,400,500,700" rel="stylesheet">
 <!--
@@ -579,6 +580,8 @@ _PRIVACY_HTML = """<!DOCTYPE html>
   No backslashes and no triple quotes anywhere — the MCP copy lives inside a Python string.
 -->
 <style>
+/* oqz:tokens v1 — reset, color tokens (dark default + light), base, overlays. Identical on every page
+   (tests/validation/test_site_chrome_sync.py). Theme is chosen by the oqz:boot script. */
 *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
 :root,[data-theme="dark"]{
   --bg:#1c1c24;--panel-bg:#252530;--card-bg:#2a2a36;
@@ -610,26 +613,12 @@ body::before{
 }
 [data-theme="light"] body::before{opacity:0.08}
 ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--scrollbar-thumb);border-radius:2px}
+/* /oqz:tokens */
 
-/* Language: both languages ship in the HTML (crawlable); the toggle hides one. */
-[data-lang="en"] [data-l="ko"],[data-lang="ko"] [data-l="en"]{display:none !important}
 
-.version-tag{position:fixed;top:12px;left:16px;z-index:100;display:block}
-.version-logo{width:28px;height:28px;filter:drop-shadow(0 0 6px rgba(212,168,83,0.3));opacity:.8;transition:opacity .2s}
-.version-logo:hover{opacity:1}
 .progress-bar{position:fixed;top:0;left:0;width:100%;height:2px;z-index:1000;background:var(--panel-bg)}
 .progress-bar .fill{height:100%;width:0;background:linear-gradient(90deg,var(--amber),var(--gold));transition:width .3s}
 
-nav{position:fixed;top:0;right:0;z-index:100;padding:16px 24px;display:flex;gap:20px;align-items:center;font-size:12px;transition:background-color .3s}
-/* Document page: once scrolled, give the nav the same frosted bar the home page uses on mobile so body text never runs under it. */
-nav.scrolled{left:0;justify-content:flex-end;background:var(--nav-bg);backdrop-filter:blur(8px)}
-nav a{color:var(--text-muted);text-decoration:none;letter-spacing:1.5px;transition:color .2s;text-transform:uppercase;font-weight:500}
-nav a:hover{color:var(--amber)}
-nav a.nav-cta{border:1px solid var(--amber);color:var(--amber);padding:5px 12px;border-radius:6px;font-weight:600;transition:background .2s,box-shadow .2s,color .2s}
-nav a.nav-cta:hover{background:rgba(212,168,83,0.1);box-shadow:0 0 12px rgba(212,168,83,0.15);color:var(--amber)}
-.lang-toggle{display:flex;border:1px solid var(--border);border-radius:6px;overflow:hidden;margin-left:4px}
-.lang-toggle button{background:transparent;border:none;color:var(--text-muted);padding:4px 10px;font-size:11px;font-weight:600;letter-spacing:1px;cursor:pointer;font-family:var(--font);transition:all .2s}
-.lang-toggle button.active{background:var(--amber);color:var(--bg)}
 
 .container{max-width:1080px;width:100%;margin:0 auto;padding:0 40px}
 .doc{max-width:820px;padding:128px 0 72px}
@@ -663,40 +652,88 @@ nav a.nav-cta:hover{background:rgba(212,168,83,0.1);box-shadow:0 0 12px rgba(212
 code{background:var(--card-bg);border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:.85em;color:var(--gold);word-break:break-word}
 .doc-foot{font-size:12px;color:var(--text-muted);line-height:1.8;border-top:1px solid var(--border);padding-top:20px;margin-top:8px}
 
-footer{padding:60px 0 40px;border-top:1px solid var(--border);text-align:center}
-.footer-links{display:flex;justify-content:center;gap:28px;margin-bottom:24px;flex-wrap:wrap}
-.footer-links a{color:var(--text-muted);text-decoration:none;font-size:12px;letter-spacing:1px;transition:color .2s;font-weight:500}
-.footer-links a:hover,.footer-links a.current{color:var(--amber)}
-.footer-copy{font-size:11px;color:#4a4a5a;margin-bottom:16px}
 
-[data-theme="light"] .version-logo{filter:brightness(0.3) drop-shadow(0 0 4px rgba(158,117,32,0.2))}
 [data-theme="light"] .fields,[data-theme="light"] .note{box-shadow:0 1px 4px rgba(0,0,0,0.05)}
-body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4s}
+body,.fields,.note{transition:background-color .4s,color .4s,border-color .4s}
 
 @media(max-width:768px){
-  nav{padding:8px 10px;gap:8px;justify-content:flex-end;background:var(--nav-bg);backdrop-filter:blur(8px);width:100%;left:0;right:0}
-  nav a{font-size:9px;letter-spacing:.5px}
-  nav a.nav-cta{padding:4px 8px}
-  .version-tag{top:10px;left:10px}
-  .version-logo{width:22px;height:22px}
-  .lang-toggle button{padding:3px 8px;font-size:10px}
   .container{padding:0 16px}
   .doc{padding:88px 0 48px}
   .field{grid-template-columns:1fr;gap:4px;padding:12px 14px}
   .policy p,.policy ul li{font-size:14px}
-  .footer-links{gap:16px}
 }
+/* oqz:chrome-css v1 — shared header + footer for every oneqaz.com / api.oneqaz.com page.
+   Keep this block byte-identical in every page (tests/validation/test_site_chrome_sync.py).
+   No backslashes, no triple quotes: the api.oneqaz.com copies live inside Python strings. */
+[data-lang="en"] [data-l="ko"],[data-lang="ko"] [data-l="en"]{display:none !important}
+[id]{scroll-margin-top:72px}
+.oqz-header{position:fixed;top:0;left:0;right:0;z-index:999;display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:56px;padding:6px 24px;transition:background-color .3s,box-shadow .3s}
+.oqz-header.scrolled,.oqz-header.open{background:var(--nav-bg);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);box-shadow:0 1px 0 var(--border)}
+.oqz-brand{display:inline-flex;align-items:center;gap:10px;min-height:44px;padding-right:8px;color:var(--amber);text-decoration:none;font-family:var(--font);font-size:13px;font-weight:600;letter-spacing:3px;text-transform:uppercase}
+.oqz-brand img{width:26px;height:28px;filter:drop-shadow(0 0 6px rgba(212,168,83,0.3))}
+[data-theme="light"] .oqz-brand img{filter:brightness(0.3)}
+.oqz-menu{display:flex;align-items:center;gap:4px}
+.oqz-menu a{display:inline-flex;align-items:center;min-height:40px;padding:0 10px;border-radius:6px;color:var(--text-muted);text-decoration:none;font-family:var(--font);font-size:12px;font-weight:500;letter-spacing:1.5px;text-transform:uppercase;transition:color .2s,background-color .2s}
+.oqz-menu a:hover{color:var(--amber);background:var(--hover)}
+.oqz-menu a[aria-current]{color:var(--amber)}
+.oqz-menu a.oqz-cta{margin-left:8px;border:1px solid var(--amber);color:var(--amber);font-weight:600}
+.oqz-menu a.oqz-cta:hover{background:rgba(212,168,83,0.12)}
+.oqz-lang{display:flex;margin-left:8px;border:1px solid var(--border);border-radius:6px;overflow:hidden}
+.oqz-lang button{min-width:40px;min-height:34px;border:0;background:transparent;color:var(--text-muted);font-family:var(--font);font-size:11px;font-weight:600;letter-spacing:1px;cursor:pointer;transition:background-color .2s,color .2s}
+.oqz-lang button.active{background:var(--amber);color:var(--bg)}
+.oqz-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.oqz-menu-btn{display:none;align-items:center;justify-content:center;width:44px;height:44px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);cursor:pointer}
+.oqz-menu-icon,.oqz-menu-icon::before,.oqz-menu-icon::after{display:block;width:18px;height:2px;border-radius:1px;background:currentColor;transition:transform .2s,opacity .2s}
+.oqz-menu-icon{position:relative}
+.oqz-menu-icon::before,.oqz-menu-icon::after{content:'';position:absolute;left:0}
+.oqz-menu-icon::before{top:-6px}
+.oqz-menu-icon::after{top:6px}
+.oqz-header.open .oqz-menu-icon{background:transparent}
+.oqz-header.open .oqz-menu-icon::before{transform:translateY(6px) rotate(45deg)}
+.oqz-header.open .oqz-menu-icon::after{transform:translateY(-6px) rotate(-45deg)}
+.oqz-header a:focus-visible,.oqz-header button:focus-visible,.oqz-footer a:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+@media (max-width:860px){
+  .oqz-header{padding:6px 12px;background:var(--nav-bg);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);box-shadow:0 1px 0 var(--border)}
+  .oqz-menu-btn{display:inline-flex}
+  .oqz-menu{display:none;position:absolute;top:100%;left:0;right:0;flex-direction:column;align-items:stretch;gap:0;max-height:calc(100vh - 56px);overflow-y:auto;padding:4px 16px 20px;background:var(--bg);border-bottom:1px solid var(--border);box-shadow:0 12px 24px rgba(0,0,0,0.25)}
+  .oqz-header.open .oqz-menu{display:flex}
+  .oqz-menu a{min-height:52px;padding:0 4px;border-radius:0;border-bottom:1px solid var(--border);font-size:14px;letter-spacing:1px}
+  .oqz-menu a.oqz-cta{justify-content:center;margin:16px 0 0;border-radius:8px}
+  .oqz-lang{align-self:center;margin:16px 0 0}
+  .oqz-lang button{min-width:72px;min-height:44px;font-size:13px}
+}
+.oqz-footer{margin-top:40px;padding:56px 24px 40px;border-top:1px solid var(--border);font-family:var(--font)}
+.oqz-footer-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:24px;max-width:1000px;margin:0 auto 32px}
+.oqz-footer-h{margin-bottom:8px;color:var(--amber);font-size:10px;font-weight:600;letter-spacing:2px;text-transform:uppercase}
+.oqz-footer ul{list-style:none;margin:0;padding:0}
+.oqz-footer li a{display:inline-flex;align-items:center;min-height:34px;color:var(--text-muted);text-decoration:none;font-size:13px;transition:color .2s}
+.oqz-footer li a:hover,.oqz-footer li a[aria-current]{color:var(--amber)}
+.oqz-footer-disc{max-width:720px;margin:0 auto 10px;color:var(--text-muted);font-size:11px;line-height:1.8;text-align:center}
+.oqz-footer-copy{color:var(--text-muted);font-size:11px;text-align:center;opacity:.7}
+@media (max-width:860px){
+  .oqz-footer{padding:40px 16px 32px}
+  .oqz-footer-grid{grid-template-columns:repeat(2,1fr);gap:20px 16px}
+  .oqz-footer li a{min-height:44px}
+}
+/* /oqz:chrome-css */
 </style>
 <script>
+/* oqz:boot v1 — theme + language before first paint. Identical on every page. No backslashes.
+   Theme: follows the device (light/dark), live. Language: ?lang= link > saved choice > browser language > en. */
 (function () {
-  var root = document.documentElement;
-  try {
-    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) root.setAttribute('data-theme', 'light');
-  } catch (e) {}
-  var m = location.search.match(/[?&]lang=(en|ko)/);
-  var saved = null;
+  var root = document.documentElement, mq = null;
+  try { mq = window.matchMedia('(prefers-color-scheme: light)'); } catch (e) {}
+  function applyTheme() { root.setAttribute('data-theme', mq && mq.matches ? 'light' : 'dark'); }
+  applyTheme();
+  if (mq) {
+    try { mq.addEventListener('change', applyTheme); }
+    catch (e) { try { mq.addListener(applyTheme); } catch (e2) {} }
+  }
+  var m = location.search.match(/[?&]lang=(en|ko)/), saved = null;
   try { saved = localStorage.getItem('oqz-lang'); } catch (e) {}
-  var lang = (m && m[1]) || (saved === 'ko' || saved === 'en' ? saved : 'en');
+  var browser = (navigator.language || '').toLowerCase().indexOf('ko') === 0 ? 'ko' : 'en';
+  var lang = (m && m[1]) || (saved === 'ko' || saved === 'en' ? saved : browser);
+  if (m) { try { localStorage.setItem('oqz-lang', lang); } catch (e) {} }
   root.setAttribute('data-lang', lang);
   root.lang = lang;
 })();
@@ -705,16 +742,21 @@ body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4
 <body>
 
 <div class="progress-bar"><div class="fill" id="progressFill"></div></div>
-<a class="version-tag" href="https://oneqaz.com/" aria-label="OneQAZ home"><img src="https://oneqaz.com/images/logo.png" alt="OneQAZ" class="version-logo"></a>
-
-<nav>
-  <a href="https://oneqaz.com/">OneQAZ</a>
-  <a href="https://blog.oneqaz.com/en/" target="_blank" rel="noopener" class="nav-cta" data-blog-path=""><span data-l="en">Daily Reads ↗</span><span data-l="ko">데일리 리포트 ↗</span></a>
-  <div class="lang-toggle">
-    <button id="langEn" type="button" onclick="setLang('en')">EN</button>
-    <button id="langKo" type="button" onclick="setLang('ko')">KO</button>
-  </div>
-</nav>
+<!-- oqz:chrome-header v1 — identical on every oneqaz.com / api.oneqaz.com page -->
+<header class="oqz-header" id="oqzHeader">
+  <a class="oqz-brand" href="https://oneqaz.com/" data-anchor="hero" data-xlang><img src="https://oneqaz.com/images/opt/logo-128.webp" alt="" width="26" height="28"><span>OneQAZ</span></a>
+  <button class="oqz-menu-btn" type="button" aria-expanded="false" aria-controls="oqzMenu"><span class="oqz-menu-icon" aria-hidden="true"></span><span data-l="en" class="oqz-sr">Menu</span><span data-l="ko" class="oqz-sr">메뉴</span></button>
+  <nav class="oqz-menu" id="oqzMenu" aria-label="OneQAZ">
+    <a href="https://oneqaz.com/#team" data-anchor="team" data-xlang><span data-l="en">Agents</span><span data-l="ko">에이전트</span></a>
+    <a href="https://oneqaz.com/#flow" data-anchor="flow" data-xlang><span data-l="en">How it works</span><span data-l="ko">작동 방식</span></a>
+    <a href="https://oneqaz.com/#verify" data-anchor="verify" data-xlang><span data-l="en">Verify</span><span data-l="ko">검증</span></a>
+    <a href="https://oneqaz.com/#connect" data-anchor="connect" data-xlang><span data-l="en">Connect</span><span data-l="ko">연결</span></a>
+    <a href="https://oneqaz.com/#status" data-anchor="status" data-xlang><span data-l="en">Status</span><span data-l="ko">상태</span></a>
+    <a class="oqz-cta" href="https://blog.oneqaz.com/en/" data-blog-path=""><span data-l="en">Daily Reads</span><span data-l="ko">데일리 리포트</span></a>
+    <div class="oqz-lang" role="group" aria-label="Language"><button id="langEn" type="button" onclick="setLang('en')">EN</button><button id="langKo" type="button" onclick="setLang('ko')">KO</button></div>
+  </nav>
+</header>
+<!-- /oqz:chrome-header -->
 
 <!-- Cloudflare Email Address Obfuscation would turn the legally required contact addresses into
      "[email protected]" for readers without JavaScript (crawlers, AI readers). email_off keeps them
@@ -728,7 +770,7 @@ body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4
   <div class="section-label">Legal</div>
   <h1 class="section-title">Privacy Policy</h1>
   <p class="section-desc">OneQAZ Trading Intelligence — MCP Server, API &amp; Website</p>
-  <div class="doc-meta">Last updated 2026-10-07 · Effective 2026-10-07</div>
+  <div class="doc-meta">Last updated 2026-10-14 · Effective 2026-10-14</div>
 
   <div class="toc">
     <a href="#en-purpose">Purpose</a><a href="#en-items">Items</a><a href="#en-retention">Retention</a>
@@ -755,19 +797,23 @@ body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4
         <li>Diagnose client and protocol compatibility problems.</li>
         <li>Measure aggregate usage (which tools are called, by which client type) to improve the product.</li>
         <li>Enforce access tiers, attribute usage to API keys, and issue and manage the API keys you request.</li>
+        <li>If you choose to connect an AI app to a OneQAZ account (OAuth): create a free account when you choose
+        <strong>Connect free</strong>, authenticate the account, issue, refresh and revoke the app's access tokens, and apply
+        limits per account.</li>
       </ul>
-      <p>We provide the service without accounts or consent screens. Request logs are processed on the basis of our
-      legitimate interest in operating and securing the service, limited to what is reasonably necessary (PIPA
-      Art. 15(1)(6); GDPR Art. 6(1)(f)). The contact email of an API-key holder is processed to issue and manage the key
-      you asked for (PIPA Art. 15(1)(4); GDPR Art. 6(1)(b)).</p>
+      <p>Anonymous use needs no account or consent screen. Request logs are processed on the basis of our legitimate
+      interest in operating and securing the service, limited to what is reasonably necessary (PIPA Art. 15(1)(6); GDPR
+      Art. 6(1)(f)). The contact email of an API-key holder is processed to issue and manage the key you asked for, and
+      account-connection data is processed to provide the connection you asked for (PIPA Art. 15(1)(4); GDPR
+      Art. 6(1)(b)). Connecting an account is optional; anonymous use continues to work without it.</p>
       <p>We do <strong>not</strong> sell your data, build advertising profiles, use request logs to train AI models, or make
       automated decisions about you based on them.</p>
     </section>
 
     <section id="en-items">
       <h2><span class="num">02</span>Personal information we process</h2>
-      <p>We do <strong>not</strong> require user accounts, and we do not collect names or payment details. The following is
-      generated automatically for each request to <code>api.oneqaz.com</code>:</p>
+      <p>Anonymous use does <strong>not</strong> require an account, and we do not collect names or payment details. The
+      following is generated automatically for each request to <code>api.oneqaz.com</code>:</p>
       <dl class="fields">
         <div class="field"><dt>IP address</dt><dd>Rate limiting, abuse prevention, and regional routing. For requests routed
         through Cloudflare this is the client address Cloudflare reports.</dd></div>
@@ -794,8 +840,25 @@ body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4
         keep aggregate usage statistics honest.</dd></div>
         <div class="field"><dt>Contact email (API-key holders only)</dt><dd>Provided by you when you ask for an API key.</dd></div>
       </dl>
-      <p>Of these, the IP address, the derived session key, the API-key fingerprint and the contact email are personal
-      information or can identify you in combination; the other fields describe the request, not you. We do not store the
+      <p>If you connect an AI app to a OneQAZ account (optional), we also process:</p>
+      <dl class="fields">
+        <div class="field"><dt>Account identifier</dt><dd>A random identifier we generate (not derived from your email or key).
+        If you sign in with an API key, it is linked to that key; if you choose <strong>Connect free</strong>, it is not linked
+        to any key, email or other information about you. Requests made through the connected app record this
+        identifier.</dd></div>
+        <div class="field"><dt>Connected app identifier</dt><dd>The address of the metadata document the AI app publishes (for
+        example a <code>claude.ai</code> or <code>chatgpt.com</code> address) or a random identifier issued when the app
+        registered, and the name the app declares. Requests made through the app record this identifier.</dd></div>
+        <div class="field"><dt>Connection record</dt><dd>Which app you connected, the access you granted, when, and when the
+        connection was withdrawn.</dd></div>
+        <div class="field"><dt>Access and refresh tokens</dt><dd>Stored only as one-way hashes; we keep no copy of the tokens
+        themselves.</dd></div>
+        <div class="field"><dt>Sign-in screen records</dt><dd>When a sign-in attempt fails, the IP address and time are written
+        to our server log. The API key you type on the sign-in screen is only checked against our key list — it is
+        <strong>never stored or logged</strong>.</dd></div>
+      </dl>
+      <p>Of these, the IP address, the derived session key, the API-key fingerprint, the contact email and the account
+      identifier are personal information or can identify you in combination; the other fields describe the request, not you. We do not store the
       contents of responses we send you. Visiting <code>oneqaz.com</code> does not send us any personal information (see
       sections 06 and 08).</p>
     </section>
@@ -805,9 +868,14 @@ body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4
       <ul>
         <li><strong>IP address and derived session key</strong> — up to <strong>12 months</strong> from the request.</li>
         <li><strong>Other request fields</strong> — kept as usage history. Once the IP-derived fields are replaced they no
-        longer identify you, except that requests made with an API key remain attributable to that key while its contact
-        email exists.</li>
+        longer identify you, except that requests made with an API key or a connected account remain attributable to that
+        key or account while its contact email or the account exists.</li>
         <li><strong>Contact email of an API-key holder</strong> — until the key is revoked or you ask us to delete it.</li>
+        <li><strong>Account connection (if you connect an AI app)</strong> — sign-in codes: deleted within 1 day after use or
+        expiry; token hashes: within 7 days after they expire or are revoked; connection records: 30 days after you withdraw
+        the connection, or 12 months after the connection was last used; app registrations that were never connected: after
+        30 days; an account created with Connect free: deleted automatically the day after its last connection record is
+        deleted; an account linked to an API key: until you ask us to delete it.</li>
         <li><strong>Database backups</strong> — rotated and deleted within about four weeks.</li>
       </ul>
       <p>If another law requires us to keep data for longer, we keep only the items it requires, for the period it requires,
@@ -820,7 +888,10 @@ body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4
         <li><strong>Procedure</strong> — when the retention period ends, IP addresses and session keys are irreversibly
         replaced by a processing job using a one-way transformation whose random key is discarded after each run, so the
         records can no longer be linked to an IP address. Contact emails are deleted without delay when the key is revoked or
-        on your request.</li>
+        on your request. Account-connection records, and accounts created with Connect free that no longer have a connection,
+        are deleted by a daily job when their retention period ends. When you ask
+        us to delete an account, we revoke all of its connections and tokens immediately and delete the account without
+        delay; the account identifier left in usage history then no longer identifies anyone.</li>
         <li><strong>Method</strong> — electronic records are deleted or overwritten so that they cannot be restored or
         reproduced. We keep no paper records.</li>
       </ul>
@@ -840,7 +911,7 @@ body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4
         <div class="field"><dt>Cloudflare, Inc.</dt><dd><strong>Task</strong> CDN, DDoS protection and secure tunnel (TLS
         termination) for <code>api.oneqaz.com</code> · <strong>Country</strong> United States, and the countries of Cloudflare's
         global data-center network · <strong>Items</strong> IP address, request headers (incl. user-agent) and request contents
-        in transit · <strong>When &amp; how</strong> over the network, each time you call the API · <strong>Retention</strong>
+        in transit (including what you enter on the account sign-in screen) · <strong>When &amp; how</strong> over the network, each time you call the API · <strong>Retention</strong>
         per Cloudflare's processing terms · <strong>Contact</strong> privacyquestions@cloudflare.com, 101 Townsend St.,
         San Francisco, CA 94107, USA</dd></div>
         <div class="field"><dt>GitHub, Inc.</dt><dd><strong>Task</strong> hosting the <code>oneqaz.com</code> website
@@ -868,7 +939,9 @@ body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4
         <li><strong>Technical</strong> — encrypted transport (HTTPS/TLS); the database is not exposed to the internet and is
         reachable only from our internal network; separate database roles per service; API keys are never written to request
         logs (one-way fingerprint only); only a whitelisted summary of arguments is stored; IP addresses are irreversibly
-        replaced after 12 months.</li>
+        replaced after 12 months. For account connections: tokens stored only as hashes, short-lived (1-hour) access
+        tokens, refresh tokens rotated on every use with reuse detection, PKCE, and a sign-in screen that shows where you
+        will be returned and cannot be embedded in other sites.</li>
         <li><strong>Physical</strong> — servers and storage are kept at a location managed directly by the operator.</li>
       </ul>
     </section>
@@ -877,7 +950,7 @@ body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4
       <h2><span class="num">08</span>Automatic collection devices (cookies)</h2>
       <ul>
         <li>We do not use cookies, analytics, advertising or tracking scripts, and we do not collect behavioural information
-        for targeted advertising.</li>
+        for targeted advertising. The account sign-in screen does not use cookies either.</li>
         <li>The website remembers your language choice (<code>oqz-lang</code>) in your browser's local storage only; it is
         never sent to us. You can remove it by clearing this site's data in your browser.</li>
       </ul>
@@ -891,9 +964,12 @@ body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4
         portability.</li>
         <li>Send requests to <a href="mailto:contact@oneqaz.com">contact@oneqaz.com</a>. A legal representative or an
         authorised agent may act for you with a power of attorney.</li>
-        <li>Because request logs are not tied to accounts, please include the IP address and approximate time of your
-        requests, or the API key concerned (you may send its SHA-256 fingerprint instead of the key itself), so that we can
-        find the records.</li>
+        <li>Requests made without a connected account are not tied to an account, so please include the IP address and
+        approximate time of your requests, or the API key concerned (you may send its SHA-256 fingerprint instead of the key
+        itself), so that we can find the records.</li>
+        <li>If you connected an AI app, you can disconnect it in that app, or ask us to withdraw the connection or delete the
+        account. Withdrawal makes the app's tokens stop working immediately. For a request about a connected account, include
+        its account identifier — your AI app can show it by calling the <code>get_account_status</code> tool.</li>
         <li>We respond within 10 days. Where the law allows us to limit a request (for example, where another law requires
         retention or it would harm someone else's rights), we will tell you the reason.</li>
         <li>If you are in the EU/EEA or the UK, you may also lodge a complaint with your local data-protection authority.</li>
@@ -925,6 +1001,8 @@ body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4
       <p>When an AI client (such as Claude, ChatGPT, or Gemini) calls OneQAZ on your behalf, your request reaches us through
       that client's platform. Every response carries <code>disclaimer</code>, <code>is_investment_advice=false</code>, and
       <code>data_classification=research_information_only</code>.</p>
+      <p>If you connect an AI app to your OneQAZ account, we issue access tokens to that app at your direction. The AI
+      platform stores and uses those tokens under its own policy. You can disconnect at any time (see section 09).</p>
     </section>
 
     <section id="en-na">
@@ -939,7 +1017,10 @@ body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4
 
     <section id="en-changes">
       <h2><span class="num">14</span>Changes</h2>
-      <p>This policy takes effect on 2026-10-07. We announce changes by updating the date above; previous versions are
+      <p>This policy takes effect on 2026-10-14. Change on 2026-10-14: an AI app can be connected on the free plan without an
+      API key (Connect free); such accounts are linked to no key or personal details and are deleted automatically once no
+      connection remains — sections 01–04 and 09. Change on 2026-10-08: added optional account connection for AI apps (OAuth)
+      — sections 01–04, 06–09 and 12. We announce changes by updating the date above; previous versions are
       available in the <a href="https://github.com/wnsod/oneqaz/commits/main/privacy.html" target="_blank" rel="noopener">public
       change history</a>.</p>
     </section>
@@ -954,7 +1035,7 @@ body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4
   <div class="section-label">법적 고지</div>
   <h1 class="section-title">개인정보 처리방침</h1>
   <p class="section-desc">OneQAZ 트레이딩 인텔리전스 — MCP 서버, API 및 웹사이트</p>
-  <div class="doc-meta">최종 수정 2026-10-07 · 시행 2026-10-07</div>
+  <div class="doc-meta">최종 수정 2026-10-14 · 시행 2026-10-14</div>
 
   <div class="toc">
     <a href="#ko-purpose">처리 목적</a><a href="#ko-items">처리 항목</a><a href="#ko-retention">보유 기간</a>
@@ -980,18 +1061,21 @@ body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4
         <li>클라이언트·프로토콜 호환성 문제 진단.</li>
         <li>제품 개선을 위한 집계 사용량 측정(어떤 tool 이 어떤 클라이언트에서 호출되는지).</li>
         <li>접근 등급 적용, API 키별 사용량 집계, 이용자가 요청한 API 키의 발급·관리.</li>
+        <li>이용자가 선택한 경우 AI 앱과 OneQAZ 계정의 연결(OAuth): <strong>무료로 연결</strong>을 선택하면 무료 계정 생성, 계정 인증,
+        앱 접근 토큰의 발급·갱신·폐기, 계정 단위 이용 한도 적용.</li>
       </ul>
-      <p>OneQAZ는 회원가입이나 동의 절차 없이 서비스를 제공합니다. 요청 로그는 서비스 운영·보안이라는 정당한 이익을 달성하기 위해
+      <p>익명 이용에는 회원가입이나 동의 절차가 필요하지 않습니다. 요청 로그는 서비스 운영·보안이라는 정당한 이익을 달성하기 위해
       합리적으로 필요한 범위에서 「개인정보 보호법」 제15조 제1항 제6호에 근거하여 처리합니다. API 키 보유자의 연락 이메일은 이용자가
-      요청한 키를 발급·관리하기 위해 같은 조 제1항 제4호에 근거하여 처리합니다.</p>
+      요청한 키를 발급·관리하기 위해, 계정 연결 정보는 이용자가 요청한 연결을 제공하기 위해 같은 조 제1항 제4호에 근거하여 처리합니다.
+      계정 연결은 선택 사항이며, 연결하지 않아도 익명 이용은 그대로 가능합니다.</p>
       <p>개인정보를 판매하거나 광고 프로필을 만들지 <strong>않으며</strong>, 요청 로그를 AI 모델 학습이나 이용자에 대한 자동화된 결정에
       사용하지 않습니다.</p>
     </section>
 
     <section id="ko-items">
       <h2><span class="num">02</span>처리하는 개인정보 항목</h2>
-      <p>회원 계정을 요구하지 <strong>않으며</strong>, 이름·결제 정보를 수집하지 않습니다. <code>api.oneqaz.com</code>에 대한 요청마다
-      다음 정보가 자동으로 생성·기록됩니다.</p>
+      <p>익명 이용에는 계정이 필요하지 <strong>않으며</strong>, 이름·결제 정보를 수집하지 않습니다. <code>api.oneqaz.com</code>에 대한
+      요청마다 다음 정보가 자동으로 생성·기록됩니다.</p>
       <dl class="fields">
         <div class="field"><dt>IP 주소</dt><dd>요청 수 제한, 남용 방지, 지역 라우팅. Cloudflare를 거친 요청은 Cloudflare가 전달한 클라이언트
         주소입니다.</dd></div>
@@ -1011,7 +1095,19 @@ body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4
         <div class="field"><dt>트래픽 분류</dt><dd>집계 통계를 정직하게 유지하기 위한 파생 라벨(크롤러 / 운영자 자체 점검 / 외부).</dd></div>
         <div class="field"><dt>연락 이메일(API 키 보유자만)</dt><dd>API 키를 신청할 때 이용자가 제공합니다.</dd></div>
       </dl>
-      <p>이 중 IP 주소, 파생 세션 키, API 키 지문, 연락 이메일은 개인정보이거나 다른 정보와 결합하여 이용자를 식별할 수 있는 정보이며,
+      <p>AI 앱을 OneQAZ 계정에 연결하는 경우(선택)에는 다음 정보도 처리합니다.</p>
+      <dl class="fields">
+        <div class="field"><dt>계정 식별자</dt><dd>OneQAZ가 무작위로 생성하는 값(이메일이나 키에서 만들지 않음)입니다. API 키로 로그인하면 그
+        키와 연결되고, <strong>무료로 연결</strong>을 선택하면 어떤 키·이메일·이용자 정보와도 연결되지 않습니다. 연결된 앱을 통한 요청에는
+        이 식별자를 기록합니다.</dd></div>
+        <div class="field"><dt>연결된 앱 식별자</dt><dd>AI 앱이 공개한 메타데이터 문서 주소(예: <code>claude.ai</code>·<code>chatgpt.com</code>
+        주소) 또는 앱 등록 시 발급한 무작위 값과, 앱이 스스로 밝힌 이름. 앱을 통한 요청에는 이 식별자를 기록합니다.</dd></div>
+        <div class="field"><dt>연결 기록</dt><dd>연결한 앱, 허용한 접근 범위, 연결 일시, 연결을 철회한 일시.</dd></div>
+        <div class="field"><dt>접근·갱신 토큰</dt><dd>단방향 해시값만 저장하며 토큰 원문은 보관하지 않습니다.</dd></div>
+        <div class="field"><dt>로그인 화면 기록</dt><dd>로그인에 실패하면 IP 주소와 시각을 서버 로그에 남깁니다. 로그인 화면에 입력한 API 키는
+        등록된 키와 대조하는 데에만 쓰며 <strong>저장하거나 기록하지 않습니다</strong>.</dd></div>
+      </dl>
+      <p>이 중 IP 주소, 파생 세션 키, API 키 지문, 연락 이메일, 계정 식별자는 개인정보이거나 다른 정보와 결합하여 이용자를 식별할 수 있는 정보이며,
       나머지는 이용자가 아니라 요청을 설명하는 정보입니다. 이용자에게 보낸 응답 본문은 저장하지 않습니다. <code>oneqaz.com</code>
       방문만으로 OneQAZ에 전달되는 개인정보는 없습니다(06·08 참조).</p>
     </section>
@@ -1020,9 +1116,12 @@ body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4
       <h2><span class="num">03</span>개인정보의 처리 및 보유 기간</h2>
       <ul>
         <li><strong>IP 주소와 파생 세션 키</strong> — 요청일로부터 <strong>최대 12개월</strong>.</li>
-        <li><strong>그 밖의 요청 기록</strong> — 사용 이력으로 보관합니다. IP 파생 항목이 치환된 뒤에는 이용자를 식별하지 않으며, 다만 API 키로
-        한 요청은 그 키의 연락 이메일이 남아 있는 동안 해당 키에 귀속됩니다.</li>
+        <li><strong>그 밖의 요청 기록</strong> — 사용 이력으로 보관합니다. IP 파생 항목이 치환된 뒤에는 이용자를 식별하지 않으며, 다만 API 키나
+        연결된 계정으로 한 요청은 그 키의 연락 이메일 또는 그 계정이 남아 있는 동안 해당 키·계정에 귀속됩니다.</li>
         <li><strong>API 키 보유자의 연락 이메일</strong> — 키를 폐기하거나 이용자가 삭제를 요청할 때까지.</li>
+        <li><strong>계정 연결 정보(AI 앱을 연결한 경우)</strong> — 로그인 코드: 사용 또는 만료 후 1일 이내 삭제 · 토큰 해시: 만료·폐기 후 7일
+        이내 · 연결 기록: 연결 철회 후 30일, 또는 마지막 사용 후 12개월 · 연결되지 않은 앱 등록: 30일 후 · 무료로 연결해 만든 계정: 마지막
+        연결 기록이 삭제된 다음 날 자동 삭제 · API 키에 연결된 계정: 이용자가 삭제를 요청할 때까지.</li>
         <li><strong>데이터베이스 백업</strong> — 순환 방식으로 약 4주 이내에 삭제됩니다.</li>
       </ul>
       <p>다른 법령이 더 오래 보존하도록 정한 경우에는 그 법령이 정한 항목만, 정한 기간 동안 다른 정보와 분리하여 보관합니다.</p>
@@ -1032,7 +1131,10 @@ body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4
       <h2><span class="num">04</span>개인정보의 파기 절차 및 방법</h2>
       <ul>
         <li><strong>파기 절차</strong> — 보유 기간이 지난 IP 주소와 세션 키는 실행마다 폐기되는 임의 키를 쓴 단방향 변환 작업으로 비가역
-        치환하여, 기록을 IP 주소와 연결할 수 없게 합니다. 연락 이메일은 키를 폐기하거나 이용자가 요청하면 지체 없이 삭제합니다.</li>
+        치환하여, 기록을 IP 주소와 연결할 수 없게 합니다. 연락 이메일은 키를 폐기하거나 이용자가 요청하면 지체 없이 삭제합니다. 계정 연결
+        정보와 연결이 남지 않은 '무료로 연결' 계정은 보유 기간이 끝나면 매일 도는 정리 작업이 삭제합니다. 계정 삭제를 요청하면 그 계정의
+        연결과 토큰을 즉시 폐기하고 계정을 지체 없이
+        삭제하며, 그 뒤 사용 이력에 남은 계정 식별자로는 누구인지 알 수 없습니다.</li>
         <li><strong>파기 방법</strong> — 전자적 파일 형태의 정보는 복구·재생할 수 없도록 삭제하거나 덮어씁니다. 종이 문서는 보관하지 않습니다.</li>
       </ul>
     </section>
@@ -1050,7 +1152,7 @@ body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4
       <dl class="fields">
         <div class="field"><dt>Cloudflare, Inc.</dt><dd><strong>위탁 업무</strong> <code>api.oneqaz.com</code>의 CDN, DDoS 방어,
         보안 터널(TLS 종단) · <strong>이전 국가</strong> 미국 및 Cloudflare 글로벌 데이터센터 소재 국가 · <strong>이전 항목</strong> IP 주소,
-        요청 헤더(user-agent 포함), 전송 중인 요청 내용 · <strong>이전 시기·방법</strong> API 호출 시마다 네트워크로 전송 ·
+        요청 헤더(user-agent 포함), 전송 중인 요청 내용(계정 로그인 화면 입력값 포함) · <strong>이전 시기·방법</strong> API 호출 시마다 네트워크로 전송 ·
         <strong>보유 기간</strong> Cloudflare 처리 약관에 따름 · <strong>연락처</strong> privacyquestions@cloudflare.com, 101 Townsend
         St., San Francisco, CA 94107, USA</dd></div>
         <div class="field"><dt>GitHub, Inc.</dt><dd><strong>위탁 업무</strong> <code>oneqaz.com</code> 웹사이트 호스팅(GitHub Pages) ·
@@ -1074,7 +1176,8 @@ body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4
         <li><strong>관리적 조치</strong> — 개인정보에 대한 접근 권한을 운영자로 제한합니다.</li>
         <li><strong>기술적 조치</strong> — 전송 구간 암호화(HTTPS/TLS), 데이터베이스는 인터넷에 노출하지 않고 내부망에서만 접근,
         서비스별 데이터베이스 계정 분리, API 키는 요청 로그에 원문 대신 단방향 지문만 기록, 요청 인자는 허용 목록 요약만 저장,
-        12개월이 지난 IP 주소는 비가역 치환.</li>
+        12개월이 지난 IP 주소는 비가역 치환. 계정 연결에는 토큰 해시 저장, 1시간 단기 접근 토큰, 사용할 때마다 갱신 토큰 교체와 재사용 탐지,
+        PKCE, 돌아갈 주소를 표시하고 다른 사이트에 삽입할 수 없는 로그인 화면을 적용합니다.</li>
         <li><strong>물리적 조치</strong> — 서버와 저장장치는 운영자가 직접 관리하는 장소에 둡니다.</li>
       </ul>
     </section>
@@ -1082,7 +1185,8 @@ body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4
     <section id="ko-cookies">
       <h2><span class="num">08</span>개인정보 자동 수집 장치의 설치·운영 및 거부</h2>
       <ul>
-        <li>쿠키, 방문 분석, 광고·추적 스크립트를 사용하지 않으며, 맞춤형 광고를 위한 행태정보를 수집하지 않습니다.</li>
+        <li>쿠키, 방문 분석, 광고·추적 스크립트를 사용하지 않으며, 맞춤형 광고를 위한 행태정보를 수집하지 않습니다. 계정 로그인 화면도 쿠키를
+        사용하지 않습니다.</li>
         <li>웹사이트는 언어 선택(<code>oqz-lang</code>)을 이용자 브라우저의 로컬 저장소에만 기억하며 OneQAZ로 전송하지 않습니다. 브라우저에서
         이 사이트의 데이터를 지우면 삭제됩니다.</li>
       </ul>
@@ -1094,8 +1198,11 @@ body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4
         <li>이용자는 언제든지 개인정보의 열람, 정정·삭제, 처리정지를 요구할 수 있습니다(「개인정보 보호법」 제35조~제37조).</li>
         <li>요구는 <a href="mailto:contact@oneqaz.com">contact@oneqaz.com</a>으로 보내 주십시오. 법정대리인이나 위임을 받은 대리인을 통해서도
         할 수 있으며, 이 경우 위임장을 제출해야 합니다.</li>
-        <li>요청 로그는 계정과 연결되어 있지 않으므로, 기록을 찾을 수 있도록 요청에 사용한 IP 주소와 대략적인 이용 시간, 또는 해당 API 키
-        (키 대신 SHA-256 지문을 보내도 됩니다)를 함께 알려 주십시오.</li>
+        <li>계정을 연결하지 않고 한 요청은 계정과 연결되어 있지 않으므로, 기록을 찾을 수 있도록 요청에 사용한 IP 주소와 대략적인 이용 시간, 또는
+        해당 API 키(키 대신 SHA-256 지문을 보내도 됩니다)를 함께 알려 주십시오.</li>
+        <li>AI 앱을 연결한 경우 해당 앱에서 연결을 해제하거나, OneQAZ에 연결 철회 또는 계정 삭제를 요청할 수 있습니다. 철회하면 그 앱의 토큰은
+        즉시 효력을 잃습니다. 연결된 계정에 관한 요구에는 계정 식별자를 함께 알려 주십시오 — AI 앱에서 <code>get_account_status</code>
+        도구를 호출하면 확인할 수 있습니다.</li>
         <li>요구를 받은 날부터 10일 이내에 처리 결과를 알려 드립니다. 다른 법령에 따라 보존해야 하거나 다른 사람의 권리를 침해할 우려가 있는 등
         법령상 제한 사유가 있는 경우에는 그 사유를 알려 드립니다.</li>
       </ul>
@@ -1125,6 +1232,8 @@ body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4
       <p>AI 클라이언트(Claude, ChatGPT, Gemini 등)가 이용자를 대신해 OneQAZ를 호출하면, 요청은 해당 클라이언트의 플랫폼을 거쳐 도달합니다.
       모든 응답에는 <code>disclaimer</code>, <code>is_investment_advice=false</code>,
       <code>data_classification=research_information_only</code> 가 포함됩니다.</p>
+      <p>AI 앱을 OneQAZ 계정에 연결하면 OneQAZ는 이용자의 지시에 따라 그 앱에 접근 토큰을 발급합니다. AI 플랫폼은 자체 방침에 따라 이 토큰을
+      보관·사용합니다. 연결은 언제든지 해제할 수 있습니다(09 참조).</p>
     </section>
 
     <section id="ko-na">
@@ -1138,7 +1247,10 @@ body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4
 
     <section id="ko-changes">
       <h2><span class="num">14</span>개인정보 처리방침의 변경</h2>
-      <p>본 방침은 2026년 10월 7일부터 시행합니다. 변경 사항은 상단의 날짜를 갱신하여 알리며, 이전 처리방침은
+      <p>본 방침은 2026년 10월 14일부터 시행합니다. 2026-10-14 변경: API 키 없이 무료 플랜으로 AI 앱을 연결하는 방법('무료로 연결') 추가 —
+      이 계정은 어떤 키나 이용자 정보와도 연결되지 않으며 연결이 남지 않으면 자동 삭제 — 01~04·09절.
+      2026-10-08 변경: AI 앱 계정 연결(OAuth, 선택) 추가 — 01~04·06~09·12절.
+      변경 사항은 상단의 날짜를 갱신하여 알리며, 이전 처리방침은
       <a href="https://github.com/wnsod/oneqaz/commits/main/privacy.html" target="_blank" rel="noopener">공개 변경 이력</a>에서 확인할 수 있습니다.</p>
     </section>
   </div>
@@ -1150,20 +1262,152 @@ body,nav,.fields,.note{transition:background-color .4s,color .4s,border-color .4
 </div>
 </main>
 
-<footer>
-  <div class="container">
-    <div class="footer-links">
-      <a href="https://github.com/wnsod/oneqaz-trading-mcp" target="_blank" rel="noopener">GitHub</a>
-      <a href="https://pypi.org/project/oneqaz-trading-mcp/" target="_blank" rel="noopener">PyPI</a>
-      <a href="https://blog.oneqaz.com/en/rss.xml" target="_blank" rel="noopener" data-blog-path="rss.xml">RSS</a>
-      <a href="https://oneqaz.com/privacy" class="current">Privacy</a>
-      <a href="https://oneqaz.com/terms">Terms</a>
-      <a href="mailto:contact@oneqaz.com">Contact</a>
+<!-- oqz:chrome-footer v1 — identical on every oneqaz.com / api.oneqaz.com page -->
+<footer class="oqz-footer">
+  <div class="oqz-footer-grid">
+    <div>
+      <p class="oqz-footer-h"><span data-l="en">Product</span><span data-l="ko">제품</span></p>
+      <ul>
+        <li><a href="https://oneqaz.com/#connect" data-anchor="connect" data-xlang><span data-l="en">Connect via MCP</span><span data-l="ko">MCP로 연결</span></a></li>
+        <li><a href="https://api.oneqaz.com/pricing" data-xlang><span data-l="en">Pricing &amp; limits</span><span data-l="ko">요금·호출 한도</span></a></li>
+        <li><a href="https://api.oneqaz.com/keys" data-xlang><span data-l="en">API keys</span><span data-l="ko">API 키</span></a></li>
+        <li><a href="https://oneqaz.com/#status" data-anchor="status" data-xlang><span data-l="en">System status</span><span data-l="ko">시스템 상태</span></a></li>
+      </ul>
     </div>
-    <div class="footer-copy">&copy; 2026 OneQAZ. All rights reserved.</div>
+    <div>
+      <p class="oqz-footer-h"><span data-l="en">Evidence</span><span data-l="ko">근거</span></p>
+      <ul>
+        <li><a href="https://blog.oneqaz.com/en/track-record/all-time/" data-blog-path="track-record/all-time/"><span data-l="en">All-time record</span><span data-l="ko">전체 기간 성적</span></a></li>
+        <li><a href="https://blog.oneqaz.com/en/methodology/" data-blog-path="methodology/"><span data-l="en">Methodology</span><span data-l="ko">방법론</span></a></li>
+        <li><a href="https://blog.oneqaz.com/en/corrections/" data-blog-path="corrections/"><span data-l="en">Corrections</span><span data-l="ko">정정 기록</span></a></li>
+        <li><a href="https://blog.oneqaz.com/en/anchors/" data-blog-path="anchors/"><span data-l="en">Ledger anchors</span><span data-l="ko">원장 앵커</span></a></li>
+      </ul>
+    </div>
+    <div>
+      <p class="oqz-footer-h"><span data-l="en">Read &amp; watch</span><span data-l="ko">읽기·보기</span></p>
+      <ul>
+        <li><a href="https://blog.oneqaz.com/en/" data-blog-path=""><span data-l="en">Daily Reads</span><span data-l="ko">데일리 리포트</span></a></li>
+        <li><a href="https://blog.oneqaz.com/en/rss.xml" data-blog-path="rss.xml">RSS</a></li>
+        <li><a href="https://www.youtube.com/@OneQAZ2026/live" target="_blank" rel="noopener"><span data-l="en">YouTube live ↗</span><span data-l="ko">유튜브 라이브 ↗</span></a></li>
+      </ul>
+    </div>
+    <div>
+      <p class="oqz-footer-h"><span data-l="en">Developers &amp; legal</span><span data-l="ko">개발자·약관</span></p>
+      <ul>
+        <li><a href="https://github.com/oneqaz-trading/oneqaz-trading-mcp" target="_blank" rel="noopener">GitHub ↗</a></li>
+        <li><a href="https://pypi.org/project/oneqaz-trading-mcp/" target="_blank" rel="noopener">PyPI ↗</a></li>
+        <li><a href="https://oneqaz.com/privacy" data-xlang><span data-l="en">Privacy</span><span data-l="ko">개인정보처리방침</span></a></li>
+        <li><a href="https://oneqaz.com/terms" data-xlang><span data-l="en">Terms</span><span data-l="ko">이용약관</span></a></li>
+        <li><a href="mailto:contact@oneqaz.com"><span data-l="en">Contact</span><span data-l="ko">문의</span></a></li>
+      </ul>
+    </div>
   </div>
+  <p class="oqz-footer-disc"><span data-l="en">Research information only — not investment advice. OneQAZ outputs are paper-trading research signals (simulated fills, no fees or taxes); past simulated performance does not predict future real-money returns.</span><span data-l="ko">연구용 정보이며 투자 자문이 아닙니다. OneQAZ의 산출물은 가상매매 기반 연구 시그널(시뮬레이션 체결, 수수료·세금 미반영)이며, 과거 시뮬레이션 성과는 미래의 실계좌 수익을 보장하지 않습니다.</span></p>
+  <p class="oqz-footer-copy">&copy; 2026 OneQAZ. All rights reserved.</p>
 </footer>
+<!-- /oqz:chrome-footer -->
 <!--/email_off-->
+
+<script>
+/* oqz:chrome-js v1 — shared header/footer behaviour, identical on every page. No backslashes. */
+(function () {
+  var doc = document, root = doc.documentElement;
+  var header = doc.getElementById('oqzHeader');
+  if (!header) return;
+  var btn = header.querySelector('.oqz-menu-btn');
+  var BLOG = 'https://blog.oneqaz.com/';
+  var onHome = !!doc.getElementById('hero');
+
+  function setOpen(open) {
+    header.classList.toggle('open', open);
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+  btn.addEventListener('click', function (e) { e.stopPropagation(); setOpen(!header.classList.contains('open')); });
+  doc.addEventListener('click', function (e) { if (!header.contains(e.target)) setOpen(false); });
+  doc.addEventListener('keydown', function (e) { if (e.key === 'Escape') setOpen(false); });
+  window.addEventListener('resize', function () { if (window.innerWidth > 860) setOpen(false); });
+  header.querySelector('.oqz-menu').addEventListener('click', function (e) {
+    if (e.target.closest && e.target.closest('a')) setOpen(false);
+  });
+
+  function lang() { return root.getAttribute('data-lang') === 'ko' ? 'ko' : 'en'; }
+
+  // Links to other OneQAZ pages carry the language (?lang=); blog links follow its /en/ mirror.
+  function syncLinks() {
+    var l = lang(), i, a, base, cut, path, hash;
+    var xs = doc.querySelectorAll('a[data-xlang]');
+    for (i = 0; i < xs.length; i++) {
+      a = xs[i];
+      if (!a.getAttribute('data-href')) a.setAttribute('data-href', a.getAttribute('href'));
+      base = a.getAttribute('data-href');
+      cut = base.indexOf('#');
+      path = cut < 0 ? base : base.slice(0, cut);
+      hash = cut < 0 ? '' : base.slice(cut);
+      a.setAttribute('href', path + (path.indexOf('?') < 0 ? '?' : '&') + 'lang=' + l + hash);
+    }
+    var bs = doc.querySelectorAll('a[data-blog-path]');
+    for (i = 0; i < bs.length; i++) {
+      a = bs[i];
+      a.setAttribute('href', BLOG + (l === 'en' && !a.hasAttribute('data-blog-single') ? 'en/' : '') + a.getAttribute('data-blog-path'));
+    }
+    var en = doc.getElementById('langEn'), ko = doc.getElementById('langKo');
+    if (en) { en.classList.toggle('active', l === 'en'); en.setAttribute('aria-pressed', l === 'en' ? 'true' : 'false'); }
+    if (ko) { ko.classList.toggle('active', l === 'ko'); ko.setAttribute('aria-pressed', l === 'ko' ? 'true' : 'false'); }
+  }
+  syncLinks();
+  if (window.MutationObserver) new MutationObserver(syncLinks).observe(root, { attributes: true, attributeFilter: ['data-lang'] });
+
+  // Home page: section links scroll in place (no reload, no new tab).
+  var anchors = doc.querySelectorAll('a[data-anchor]');
+  for (var k = 0; k < anchors.length; k++) {
+    anchors[k].addEventListener('click', function (e) {
+      if (!onHome) return;
+      var id = this.getAttribute('data-anchor'), el = doc.getElementById(id);
+      if (!el) return;
+      e.preventDefault();
+      setOpen(false);
+      var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      if (id === 'hero') window.scrollTo({ top: 0, behavior: reduce ? 'auto' : 'smooth' });
+      else el.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
+      try { history.replaceState(null, '', id === 'hero' ? location.pathname + location.search : '#' + id); } catch (err) {}
+    });
+  }
+
+  // Current page / current section.
+  function norm(p) { return (p || '/').replace(/[.]html$/, '').replace(/[/]+$/, '') || '/'; }
+  var here = norm(location.pathname);
+  var all = doc.querySelectorAll('.oqz-header a, .oqz-footer a');
+  for (var m = 0; m < all.length; m++) {
+    var link = all[m];
+    if (link.hasAttribute('data-anchor') || link.target === '_blank') continue;
+    try {
+      var u = new URL(link.getAttribute('data-href') || link.href, location.href);
+      var sameSite = /(^|[.])oneqaz[.]com$/.test(u.hostname) || u.hostname === location.hostname;
+      if (sameSite && u.hostname.indexOf('blog.') !== 0 && norm(u.pathname) === here && here !== '/') link.setAttribute('aria-current', 'page');
+    } catch (err) {}
+  }
+  if (onHome && 'IntersectionObserver' in window) {
+    var navLinks = header.querySelectorAll('.oqz-menu a[data-anchor]');
+    var mark = function (id) {
+      for (var n = 0; n < navLinks.length; n++) {
+        if (navLinks[n].getAttribute('data-anchor') === id) navLinks[n].setAttribute('aria-current', 'location');
+        else navLinks[n].removeAttribute('aria-current');
+      }
+    };
+    var spy = new IntersectionObserver(function (entries) {
+      for (var q = 0; q < entries.length; q++) if (entries[q].isIntersecting) mark(entries[q].target.id);
+    }, { rootMargin: '-45% 0px -50% 0px' });
+    ['hero', 'team', 'chat', 'flow', 'verify', 'connect', 'status', 'content'].forEach(function (id) {
+      var el = doc.getElementById(id);
+      if (el) spy.observe(el);
+    });
+  }
+
+  function onScroll() { header.classList.toggle('scrolled', (window.pageYOffset || root.scrollTop) > 12); }
+  window.addEventListener('scroll', onScroll, { passive: true });
+  onScroll();
+})();
+</script>
 
 <script>
 var BLOG_BASE = 'https://blog.oneqaz.com/';
@@ -1185,18 +1429,10 @@ function setLang(lang) {
 }
 setLang(document.documentElement.getAttribute('data-lang') === 'ko' ? 'ko' : 'en');
 
-try {
-  window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', function (e) {
-    document.documentElement.setAttribute('data-theme', e.matches ? 'light' : 'dark');
-  });
-} catch (e) {}
-
-var NAV = document.querySelector('nav');
 function onScroll() {
   var h = document.documentElement;
   var max = h.scrollHeight - h.clientHeight;
   document.getElementById('progressFill').style.width = (max > 0 ? h.scrollTop / max * 100 : 0) + '%';
-  NAV.classList.toggle('scrolled', h.scrollTop > 24);
 }
 window.addEventListener('scroll', onScroll);
 onScroll();
@@ -1268,6 +1504,9 @@ _KEYS_HTML = f"""<!DOCTYPE html>
 <a href="https://oneqaz.com" style="color:#8a8680;font-size:.9rem">&larr; OneQAZ</a>
 <h1>API Keys</h1>
 <div class="sub">Optional &mdash; only needed for Pro-tier quota. Free tier works with no key.</div>
+<p>In Claude, ChatGPT and other AI apps, add <code>https://api.oneqaz.com/mcp</code> as a connector. If the app
+opens a OneQAZ connect screen, choose <strong>Connect free</strong> &mdash; no key or email needed. Pro users can
+enter their key on the same screen instead.</p>
 <h2>Using a key</h2>
 <p>Send it on every request as a header (either form works):</p>
 <pre>X-API-Key: &lt;your-key&gt;
