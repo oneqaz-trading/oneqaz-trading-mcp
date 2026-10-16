@@ -55,6 +55,15 @@ def main():
     print()
     print("=" * 60)
 
+    # [2026-10-11] 한도표 예열 — 요청 경로의 갱신은 이제 백그라운드라 기동 직후 첫 요청들이
+    # 코드 시드(TIER_LIMITS)로 처리되지 않게 여기서 한 번 미리 읽는다(실패해도 기동은 계속).
+    from oneqaz_trading_mcp.rate_limiter import prime_plan_limits
+    print(f"📏 플랜 한도표: {'DB' if prime_plan_limits() else '코드 시드(갱신은 백그라운드 재시도)'}")
+    # 사용 원장 기록 스레드도 지금 띄운다 — 첫 요청 전에도 상태 행(analytics_writer_heartbeat)이 돌아
+    # admin 프로브 mcp_analytics_writer_fresh 가 기동 직후부터 MCP 생존을 본다.
+    from oneqaz_trading_mcp.analytics import analytics_writer
+    analytics_writer.start()
+
     # 서버 실행
     from oneqaz_trading_mcp.server import run_server
     run_server()

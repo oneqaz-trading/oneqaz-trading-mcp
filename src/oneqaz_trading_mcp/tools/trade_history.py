@@ -16,7 +16,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
+
+from pydantic import Field
 
 from oneqaz_trading_mcp.config import (
     CACHE_TTL_TRADE_HISTORY,
@@ -32,7 +34,22 @@ try:
 except ImportError:  # pragma: no cover
     TradeHistoryEnvelope = Dict[str, Any]  # type: ignore[assignment,misc]
     TradeAnalysisEnvelope = Dict[str, Any]  # type: ignore[assignment,misc]
-from oneqaz_trading_mcp.resources.resource_response import mcp_error, MCPErrorCode, MCPErrorAction, wrap_tool_response
+from oneqaz_trading_mcp.resources.resource_response import (
+    mcp_error, MCPErrorCode, MCPErrorAction, wrap_tool_response, normalize_choice,
+    clamp_limit, hoist_constant_fields, truncation_fields,
+)
+
+# [2026-09-22] 통계 표본과 반환 행수를 분리한다.
+# ⚠️ win_rate/avg_pnl/total_pnl 은 **반환된 행에서** 계산된다. limit 만 1000→50
+# 으로 내리면 요약이 "50건" 이라고 말하는 수준의 문제가 아니라, **승률 자체가
+# 50표본 통계로 바뀌어** 시장 승률인 것처럼 제시된다.
+# ⇒ SQL 은 스캔 상한까지 그대로 읽어 통계를 내고, 응답에는 limit 만큼만 싣는다.
+# 통계의 의미는 종전(최근 1000건)과 **동일하게 유지**되고 wire 만 줄어든다.
+_TH_STATS_SCAN_CAP = 1000
+_TH_LIMIT_DEFAULT = 50
+_TH_LIMIT_MAX = 1000
+# 저엔트로피 필드 — 차원키가 아닌 부수 상수만 (step1b 함정 ②)
+_TH_HOISTABLE = ("confidence_level", "ai_score", "ai_reason", "mtf_score")
 
 logger = logging.getLogger("MarketMCP")
 
@@ -87,7 +104,7 @@ def _user_summary_analysis(data: dict) -> str:
 
 def _get_trade_history(
     market_id: str,
-    limit: int = 1000,
+    limit: Optional[int] = None,
     action_filter: Optional[str] = None,
     min_pnl: Optional[float] = None,
     max_pnl: Optional[float] = None,
@@ -95,6 +112,15 @@ def _get_trade_history(
     symbol: Optional[str] = None,
 ) -> Dict[str, Any]:
     """거래 내역 조회"""
+    # [2026-09-22] limit 상한 — 종전에는 상한이 없어 외부가 limit=100000 으로
+    # 전 구간을 한 응답에 긁을 수 있었다 (prediction_ledger/bulk_export 는 이미
+    # _MAX_PAGE 로 막고 있었고, 이 두 툴만 뚫려 있었다).
+    limit = clamp_limit(limit, _TH_LIMIT_DEFAULT, _TH_LIMIT_MAX)
+    # [2026-09-22] action_filter='yolo' 는 아래 분기 어디에도 안 걸려 필터가
+    # 통째로 무시됐다 — 잘못된 값이 "필터 없음" 으로 둔갑하는, 0건보다 나쁜 경우다.
+    action_filter, _err = normalize_choice("trade_action", "action_filter", action_filter)
+    if _err:
+        return _err
     db_path = get_market_db_path(market_id)
     logger.info("[MCP] get_trade_history market_id=%s db_path=%s", market_id, db_path)
     # [2026-08-10] .exists() 게이트 제거 — db_path 는 PG 라우팅용 논리 키일 뿐이라
@@ -157,7 +183,8 @@ def _get_trade_history(
                 params.append(cutoff)
             
             query += " ORDER BY exit_timestamp DESC LIMIT ?"
-            params.append(limit)
+            # 통계 표본용 스캔 — 사용자 limit 과 분리 (위 상수 주석 참조)
+            params.append(max(limit, _TH_STATS_SCAN_CAP))
             
             cursor = conn.execute(query, params)
             trades = []
@@ -242,14 +269,28 @@ def _get_trade_history(
                     "avg_pnl": 0,
                 }
             
+            # [2026-09-22] 행만 페이지로 자른다. stats 는 위에서 스캔 전체 기준으로
+            # 이미 계산됐으므로 승률·평균수익률의 표본은 종전과 같다.
+            page = trades[:limit]
+            common = hoist_constant_fields(page, _TH_HOISTABLE)
+            trunc = truncation_fields(
+                returned=len(page),
+                total=len(trades),
+                limit=limit,
+                maximum=_TH_LIMIT_MAX,
+                hint=("symbol / action_filter / hours_back 로 범위를 좁히세요 "
+                      "(stats 는 스캔 전체 기준입니다)."),
+                total_is_lower_bound=len(trades) >= _TH_STATS_SCAN_CAP,
+            )
+
             # LLM 요약
             summary_lines = [
-                f"[{market_id.upper()} 거래 내역] {len(trades)}건 조회",
+                f"[{market_id.upper()} 거래 내역] {len(trades)}건 집계 / {len(page)}건 반환",
                 f"- 승률: {stats['win_rate']}% ({stats['wins']}승 {stats['losses']}패)",
                 f"- 평균 수익률: {stats['avg_pnl']:+.2f}%",
             ]
 
-            for t in trades[:5]:
+            for t in page[:5]:
                 sym = t.get("symbol") or t.get("coin", "?")
                 pnl = t.get("profit_loss_pct", 0)
                 action = t.get("action", "?")
@@ -257,8 +298,19 @@ def _get_trade_history(
             
             return {
                 "market_id": market_id,
-                "trades": trades,
+                "trades": page,
                 "stats": stats,
+                # stats 표본 범위 명시 — 반환 행수와 다르다는 사실 자체가 정보다
+                "stats_scope": (
+                    f"stats are aggregated over the {len(trades)} most recent matching "
+                    f"trades (scan cap {_TH_STATS_SCAN_CAP}); trades[] carries the first "
+                    f"{len(page)} of them"
+                ),
+                **trunc,
+                **({"common": common,
+                    "common_note": ("common 의 값은 trades 의 모든 행에 적용됩니다"
+                                    "(행에서는 생략). 행에 같은 키가 있으면 행 값이 우선합니다.")}
+                   if common else {}),
                 "filters": {
                     "action": action_filter,
                     "min_pnl": min_pnl,
@@ -398,15 +450,32 @@ def register_trade_history_tools(mcp, cache):
         fq_winning_trades, fq_losing_trades,
     )
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
+    @mcp.tool(title='Trade History', annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
     async def get_trade_history(
-        market_id: str,
-        limit: int = 1000,
-        action_filter: str = "all",
-        min_pnl: Optional[float] = None,
-        max_pnl: Optional[float] = None,
-        hours_back: Optional[int] = None,
-        symbol: Optional[str] = None,
+        market_id: Annotated[str, Field(
+            description='Market ID (crypto, kr_stock, us_stock; aliases coin/kr/us accepted)', json_schema_extra={'enum': ['crypto', 'kr_stock', 'us_stock']}
+        )],
+        limit: Annotated[int, Field(
+            description=('Max rows returned (default 50, max 1000). Rows are paginated; '
+                         'see total_available / truncated. NOTE: stats (win_rate, avg_pnl) '
+                         'are aggregated over the scanned set, not over the returned rows — '
+                         'see stats_scope.')
+        )] = _TH_LIMIT_DEFAULT,
+        action_filter: Annotated[str, Field(
+            description='Filter by action (all, buy, sell)', json_schema_extra={'enum': ['buy', 'sell', 'hold']}
+        )] = 'all',
+        min_pnl: Annotated[Optional[float], Field(
+            description='Min P&L % filter (e.g., -5.0)'
+        )] = None,
+        max_pnl: Annotated[Optional[float], Field(
+            description='Max P&L % filter (e.g., 10.0)'
+        )] = None,
+        hours_back: Annotated[Optional[int], Field(
+            description='Only trades within last N hours'
+        )] = None,
+        symbol: Annotated[Optional[str], Field(
+            description='Filter by ticker symbol (e.g., "BTC", "AAPL"); case-insensitive'
+        )] = None,
     ) -> TradeHistoryEnvelope:
         """
         Purpose: Query paper-trading history with dynamic filters (action / P&L / time / symbol).
@@ -418,16 +487,6 @@ def register_trade_history_tools(mcp, cache):
         Next steps: analyze_trades, market://{market_id}/signals/feedback.
         Caveats: paper-trading data only (not real money). limit capped at 1000.
 
-        Args:
-            market_id: Market ID (crypto, kr_stock, us_stock; aliases coin/kr/us accepted)
-            limit: Max results (default 1000)
-            action_filter: Filter by action (all, buy, sell)
-            min_pnl: Min P&L % filter (e.g., -5.0)
-            max_pnl: Max P&L % filter (e.g., 10.0)
-            hours_back: Only trades within last N hours
-            symbol: Filter by ticker symbol (e.g., "BTC", "AAPL"); case-insensitive
-
-        Disclaimer: Information only, not investment advice.
         """
         # 캐시 키 생성
         cache_key = f"trade_history_{market_id}_{limit}_{action_filter}_{min_pnl}_{max_pnl}_{hours_back}_{symbol}"
@@ -459,10 +518,14 @@ def register_trade_history_tools(mcp, cache):
         cache.set(cache_key, wrapped)
         return wrapped
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
+    @mcp.tool(title='Trade Analysis', annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
     async def analyze_trades(
-        market_id: str,
-        days: int = 7,
+        market_id: Annotated[str, Field(
+            description='Market ID (crypto, kr_stock, us_stock; aliases coin/kr/us accepted)', json_schema_extra={'enum': ['crypto', 'kr_stock', 'us_stock']}
+        )],
+        days: Annotated[int, Field(
+            description='Analysis period in days (default 7, max 30)'
+        )] = 7,
     ) -> TradeAnalysisEnvelope:
         """
         Purpose: Aggregate paper trades by day / pattern / symbol.
@@ -474,11 +537,6 @@ def register_trade_history_tools(mcp, cache):
         Next steps: market://{market_id}/signals/feedback for the upstream signals.
         Caveats: max 30 days; empty result when no trades in the window.
 
-        Args:
-            market_id: Market ID (crypto, kr_stock, us_stock; aliases coin/kr/us accepted)
-            days: Analysis period in days (default 7, max 30)
-
-        Disclaimer: Information only, not investment advice.
         """
         cache_key = f"trade_analysis_{market_id}_{days}"
         cached = cache.get(cache_key, ttl=CACHE_TTL_TRADE_HISTORY * 3)  # 분석은 좀 더 캐싱
@@ -497,10 +555,14 @@ def register_trade_history_tools(mcp, cache):
         cache.set(cache_key, wrapped)
         return wrapped
     
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
+    @mcp.tool(title='Winning Trades', annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
     async def get_winning_trades(
-        market_id: str,
-        limit: int = 10,
+        market_id: Annotated[str, Field(
+            description='Market ID (crypto, kr_stock, us_stock; aliases coin/kr/us accepted)', json_schema_extra={'enum': ['crypto', 'kr_stock', 'us_stock']}
+        )],
+        limit: Annotated[int, Field(
+            description='Max results (default 10)'
+        )] = 10,
     ) -> TradeHistoryEnvelope:
         """
         Purpose: Winning paper trades only (P&L > 0). Convenience wrapper around get_trade_history(min_pnl=0.01).
@@ -511,11 +573,6 @@ def register_trade_history_tools(mcp, cache):
         Next steps: analyze_trades for breakdowns.
         Caveats: paper-trading data only.
 
-        Args:
-            market_id: Market ID (crypto, kr_stock, us_stock; aliases coin/kr/us accepted)
-            limit: Max results (default 10)
-
-        Disclaimer: Information only, not investment advice.
         """
         result = await asyncio.to_thread(
             _get_trade_history,
@@ -530,10 +587,14 @@ def register_trade_history_tools(mcp, cache):
             followup_questions_fn=fq_winning_trades,
         )
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
+    @mcp.tool(title='Losing Trades', annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
     async def get_losing_trades(
-        market_id: str,
-        limit: int = 10,
+        market_id: Annotated[str, Field(
+            description='Market ID (crypto, kr_stock, us_stock; aliases coin/kr/us accepted)', json_schema_extra={'enum': ['crypto', 'kr_stock', 'us_stock']}
+        )],
+        limit: Annotated[int, Field(
+            description='Max results (default 10)'
+        )] = 10,
     ) -> TradeHistoryEnvelope:
         """
         Purpose: Losing paper trades only (P&L < 0). Convenience wrapper around get_trade_history(max_pnl=-0.01).
@@ -544,11 +605,6 @@ def register_trade_history_tools(mcp, cache):
         Next steps: analyze_trades for breakdowns.
         Caveats: paper-trading data only.
 
-        Args:
-            market_id: Market ID (crypto, kr_stock, us_stock; aliases coin/kr/us accepted)
-            limit: Max results (default 10)
-
-        Disclaimer: Information only, not investment advice.
         """
         result = await asyncio.to_thread(
             _get_trade_history,

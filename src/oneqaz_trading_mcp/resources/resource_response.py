@@ -105,6 +105,9 @@ class MCPErrorCode(str, Enum):
     INVALID_MARKET = "invalid_market"
     INVALID_SYMBOL = "invalid_symbol"
     INVALID_INTERVAL = "invalid_interval"
+    # [2026-09-22] action_filter / status_filter 처럼 전용 코드가 없던 열거형
+    # 파라미터용. 종전엔 이런 값이 조용히 0건을 냈다.
+    INVALID_PARAMETER = "invalid_parameter"
     MISSING_REQUIRED_FIELD = "missing_required_field"
     # ── Protocol ──
     MCP_HANDSHAKE_FAILED = "mcp_handshake_failed"
@@ -128,6 +131,7 @@ _RETRYABLE_BY_CODE: dict[str, bool] = {
     MCPErrorCode.INVALID_MARKET.value: False,
     MCPErrorCode.INVALID_SYMBOL.value: False,
     MCPErrorCode.INVALID_INTERVAL.value: False,
+    MCPErrorCode.INVALID_PARAMETER.value: False,
     MCPErrorCode.MISSING_REQUIRED_FIELD.value: False,
     MCPErrorCode.MCP_HANDSHAKE_FAILED.value: True,
 }
@@ -140,7 +144,11 @@ class MCPErrorAction(str, Enum):
     CHECK = "check_availability"
 
 
-def _record_envelope_obs(error_code: Optional[str] = None, payload_bytes: Optional[int] = None) -> None:
+def _record_envelope_obs(
+    error_code: Optional[str] = None,
+    payload_bytes: Optional[int] = None,
+    result_shape: Optional[dict] = None,
+) -> None:
     """[2026-07-08] envelope 수준 관측을 현재 HTTP request scope 에 심는다.
 
     server.py 미들웨어가 응답 후 scope['state']['mcp_envelope_obs'] 를 회수해
@@ -158,6 +166,10 @@ def _record_envelope_obs(error_code: Optional[str] = None, payload_bytes: Option
             obs["error_code"] = str(error_code)[:60]
         if payload_bytes is not None:
             obs["payload_bytes"] = int(payload_bytes)
+        if result_shape is not None and "result_shape" not in obs:
+            # [2026-10-06 R7] 첫 호출만 기록. 현재 호출부 5곳은 응답당 1회씩이지만,
+            # 한 응답에 목록이 둘이 되면 뒤 목록이 앞 목록의 행 수를 조용히 덮어쓴다.
+            obs["result_shape"] = result_shape
     except Exception:
         # 관측 실패가 응답을 깨면 안 됨 (명시적 사유: observability-only 경로)
         pass
@@ -224,6 +236,11 @@ def _value_signals_static(resource_type: str, ttl: int) -> dict:
         "tier_default": "free",
         "tier_default_limits": {"daily": 1500, "minute": 60},
         "data_freshness_seconds": ttl,
+        # [2026-10-13 H6 · Observatory F7] 위 값은 **실측 데이터 나이가 아니다** — resource/tool 별
+        # ai_summary 캐시 TTL 상수(mcps/config.py::AI_SUMMARY_TTL, 30~300s)이고 ai_summary_ttl_seconds 와 같다.
+        # 이름 변경·제거는 계약 변경(major bump)이라 근거만 명시한다(additive). 실측 나이는
+        # handoff_external_truthfulness_backlog contract_change-11 방침대로 별도 필드(data_as_of)로 신설 예정.
+        "data_freshness_basis": "ai_summary_cache_ttl",
         "what_pro_unlocks": "33x daily quota (50K), 3.3x burst (200/min) — same tools, higher volume",
         "pricing_url": "https://api.oneqaz.com/pricing",
         "key_signup_url": "https://api.oneqaz.com/keys",
@@ -232,6 +249,199 @@ def _value_signals_static(resource_type: str, ttl: int) -> dict:
         # get_signal_calibration 신설 (변경 로그는 get_prediction_accuracy meta)
         "schema_version": "1.1",
     }
+
+
+# ---------------------------------------------------------------------------
+# [2026-09-22] 파라미터 허용값 — 광고(스키마)와 검증(서버)을 분리한다.
+#
+# 엄격 enum(Literal)만 쓰면 alias·대소문자 호출이 깨지고(`market_id="Crypto"` 는
+# 지금 동작한다), json_schema_extra 로 광고만 하면 잘못된 값이 **여전히 조용한
+# 0건**을 낸다 — 이 레포에서 제일 비싼 버그 유형이다.
+# ⇒ 스키마에는 **정본값만** 광고하고, 서버는 alias/대소문자를 정규화해 받되
+#    미지값에는 **명시적 에러**를 낸다.
+#
+# ⚠️ 값은 **실측으로 정한다.** interval 은 시장마다 다르다 —
+#    crypto=15m/30m/240m/1d, kr·us=15m/30m/**5m**/1d (240m 없음).
+#    "15m,30m,240m,1d" 만 넣으면 kr/us 의 정상 5m 호출이 거부된다.
+# ---------------------------------------------------------------------------
+
+# [2026-10-07] *_market 별칭 복원 — 09-22 enum 강제 도입 때 공용 별칭에서 빠져, 그 전까지 통과하던
+#   coin_market/kr_market/us_market 이 invalid_market 으로 거부됐다(실측: 09-22 이전 거부 0 → 이후 거의 전부,
+#   실사용 후보 30일 44회). 원칙은 "별칭 계속 수용·rename 금지" — 구 해석기(mcps/config.py 경로 맵)가 받던
+#   별칭은 여기서도 전부 받는다. 광고(스키마 enum)는 정본값만 유지한다.
+_MARKET_ALIASES = {
+    "coin": "crypto", "coin_market": "crypto",
+    "kr": "kr_stock", "kr_market": "kr_stock",
+    "us": "us_stock", "us_market": "us_stock",
+}
+
+_CHOICE_SETS = {
+    "market": {
+        "canonical": ("crypto", "kr_stock", "us_stock"),
+        "aliases": _MARKET_ALIASES,
+        "fold": "lower",
+    },
+    "market_or_all": {
+        "canonical": ("all", "crypto", "kr_stock", "us_stock"),
+        "aliases": _MARKET_ALIASES,
+        "fold": "lower",
+    },
+    "interval": {
+        "canonical": ("5m", "15m", "30m", "240m", "1d", "combined"),
+        "aliases": {},
+        "fold": "lower",
+    },
+    "action": {
+        "canonical": ("buy", "sell", "hold"),
+        "aliases": {},
+        "fold": "lower",
+    },
+    # ⚠️ trade_history 의 action_filter 는 signals 와 **어휘가 다르다**.
+    # signals 는 시그널 액션(buy/sell/hold), 여기는 체결 방향 필터로
+    # all/close/exit 을 받고 hold 는 없다. 같은 이름이라고 같은 집합이 아니다.
+    "trade_action": {
+        "canonical": ("all", "buy", "sell", "close", "exit"),
+        "aliases": {},
+        "fold": "lower",
+    },
+    "governance_status": {
+        "canonical": ("OBSERVATION", "CONDITIONAL", "ACTIVE", "DEPRECATED"),
+        "aliases": {},
+        "fold": "upper",
+    },
+}
+
+# kind → 에러 코드. 전용 코드가 있으면 그것을 쓴다 (외부 도입자가 분기하는 안정 식별자).
+_CHOICE_ERROR_CODE = {
+    "market": MCPErrorCode.INVALID_MARKET,
+    "market_or_all": MCPErrorCode.INVALID_MARKET,
+    "interval": MCPErrorCode.INVALID_INTERVAL,
+    "action": MCPErrorCode.INVALID_PARAMETER,
+    "trade_action": MCPErrorCode.INVALID_PARAMETER,
+    "governance_status": MCPErrorCode.INVALID_PARAMETER,
+}
+
+
+def choice_values(kind: str) -> list:
+    """스키마 광고용 정본값 목록 (alias 는 description 에만 적는다)."""
+    return list(_CHOICE_SETS[kind]["canonical"])
+
+
+def normalize_choice(kind: str, param: str, value):
+    """(정규화값, None) 또는 (None, mcp_error dict).
+
+    None/빈 문자열은 '미지정' 이므로 그대로 통과시킨다 (선택 파라미터).
+    """
+    if value is None or value == "":
+        return value, None
+    spec = _CHOICE_SETS[kind]
+    raw = str(value).strip().replace("-", "_")
+    key = raw.lower() if spec["fold"] == "lower" else raw.upper()
+    key = spec["aliases"].get(key, key)
+    if key in spec["canonical"]:
+        return key, None
+    return None, mcp_error(
+        _CHOICE_ERROR_CODE[kind],
+        f"Invalid {param}={value!r}. Allowed: {', '.join(spec['canonical'])}"
+        + (f" (aliases: {', '.join(spec['aliases'])})" if spec["aliases"] else ""),
+        action=MCPErrorAction.CHECK,
+        action_value=spec["canonical"][0],
+        param=param,
+        allowed_values=list(spec["canonical"]),
+    )
+
+
+# ---------------------------------------------------------------------------
+# [2026-09-22] 페이로드 경량화 공용 헬퍼
+# signals 에서 만든 3종을 승격·인자화했다. 파일 로컬로 두면 tool 마다 복제되고,
+# 복제된 순간 한쪽만 고쳐지는 드리프트가 난다.
+# ---------------------------------------------------------------------------
+
+
+def hoist_constant_fields(rows: list, fields: tuple) -> dict:
+    """전 행이 동일한 값을 갖는 필드만 행에서 제거하고 {필드: 값} 으로 반환.
+
+    ⚠️ rows 를 in-place 로 수정한다.
+
+    ⚠️ **fields 에 행 식별 차원키를 넣지 말 것.** 값이 하나로 수렴한 응답에서
+    차원키가 행에서 빠지면, 행 배열만 읽고 common 을 놓친 소비자가 맥락을 잃는다
+    (예: structure_calibration 의 market_id/interval/regime_bucket — 이 셋이
+    빠지면 "어느 시장의 어느 인터벌 얘긴지 모른 채" hit_rate 를 인용하게 된다).
+    통화 단위·표시용 시각 문자열 같은 **부수 상수**에만 쓴다.
+    """
+    if not rows:
+        return {}
+    common: dict = {}
+    for key in fields:
+        if not all(key in r for r in rows):
+            continue
+        first = rows[0][key]
+        if first is None:
+            continue
+        if any(r[key] != first for r in rows):
+            continue
+        for r in rows:
+            r.pop(key, None)
+        common[key] = first
+    return common
+
+
+def clamp_limit(limit, default: int, maximum: int) -> int:
+    """limit 을 [1, maximum] 으로 clamp. 정수로 읽히지 않으면 default."""
+    try:
+        v = int(limit)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(v, maximum))
+
+
+def truncation_fields(
+    returned: int,
+    total: int,
+    limit: int,
+    maximum: int,
+    hint: str,
+    *,
+    total_is_lower_bound: bool = False,
+) -> dict:
+    """잘림 사실을 응답 최상위에 명시하는 필드 묶음.
+
+    종전 관행은 stats.total 에 '반환된 건수'만 실어, limit 에 걸려 잘린 것과
+    원래 그 수뿐인 것을 외부에서 **구분할 수 없었다**. LLM 클라이언트는 이를
+    '전체'로 읽고 적재 총량에 대한 주장으로 바꿔 말한다.
+
+    total_is_lower_bound=True 는 total 이 정확한 총량이 아니라 하한일 때
+    (예: SQL 스캔 상한에 걸린 pre-slice 개수) 쓴다. 이때는 note 가 단정하지 않는다.
+    """
+    truncated = (returned < total) or (total_is_lower_bound and returned >= limit)
+    out = {
+        "returned": returned,
+        "limit": limit,
+        "truncated": truncated,
+        "total_available": total,
+    }
+    if total_is_lower_bound:
+        out["total_available_is_lower_bound"] = True
+    # [2026-10-06 R7] success=true ≠ "유용한 답". 빈 응답·잘린 응답을 사용 원장에서
+    # 구분할 수 있게 같은 사실을 관측으로도 남긴다(응답 본문은 불변).
+    _record_envelope_obs(result_shape={
+        "result_count": int(returned),
+        "result_truncated": bool(truncated),
+        "total_available": int(total),
+        "empty_result": int(returned) == 0,
+    })
+    if truncated:
+        if total_is_lower_bound:
+            out["truncated_note"] = (
+                f"상위 {returned}건만 반환했습니다 — 조건에 맞는 실제 건수는 더 많을 수 "
+                f"있습니다. limit 을 올리거나(최대 {maximum}) {hint}"
+            )
+        else:
+            out["truncated_note"] = (
+                f"조건에 맞는 {total}건 중 상위 {returned}건입니다. "
+                f"limit 을 올리거나(최대 {maximum}) {hint}"
+            )
+    return out
 
 
 def wrap_tool_response(
@@ -414,6 +624,52 @@ def wrap_with_ai_summary(
     except Exception:
         pass
 
+    return response
+
+
+def wrap_entity_response(payload: dict, next_actions: Optional[list] = None) -> dict:
+    """엔티티 컨텍스트 tool 전용 envelope (2026-10-15, req_mcp_entity_context 제안서 ED11 승인).
+
+    표준 `wrap_with_ai_summary` 는 요약 3종이 앞이고 데이터가 5번째(`full_data`)라, 응답 앞부분만 읽히거나
+    잘리면 headline 이 사라진다. 여기서는 payload(headline → meta → … → gaps) 를 **맨 앞** 에 두고,
+    금지항목 5 의 컴플라이언스 꼬리(disclaimer · is_investment_advice · data_classification)와
+    관측 필드(request_id · timestamp · _source)를 뒤에 붙인다. ai_summary·summary_for_user·_llm_summary·
+    _value_signals·후속질문은 싣지 않는다 — headline 이 그 역할이다(중복 비용: 첫접촉 진단 §10).
+    에러 dict(mcp_error)는 그대로 통과시킨다.
+    """
+    if isinstance(payload, dict) and payload.get("error") is True:
+        return payload
+    response = dict(payload)
+    response["disclaimer"] = DISCLAIMER_TEXT
+    response["is_investment_advice"] = False
+    response["data_classification"] = "research_information_only"
+    response["request_id"] = _new_request_id()
+    response["timestamp"] = _utc_now_iso()
+    response["_source"] = _serving_source()
+    if next_actions:
+        response["_next_actions"] = [
+            {
+                "intent": str(a.get("intent", ""))[:120],
+                "tool": str(a.get("tool", ""))[:80],
+                "args": a.get("args") if isinstance(a.get("args"), dict) else {},
+                "rationale": str(a.get("rationale", ""))[:300],
+            }
+            for a in next_actions[:3] if isinstance(a, dict) and a.get("tool")
+        ]
+    sections = ("upstream", "peers", "downstream", "news")
+    returned = sum(len(response.get(s) or []) for s in sections)
+    total = sum(int(((response.get("meta") or {}).get("sections") or {}).get(s, {}).get("total", 0))
+                for s in sections)
+    _record_envelope_obs(result_shape={
+        "result_count": returned,
+        "result_truncated": returned < total,
+        "total_available": total,
+        "empty_result": returned == 0,
+    })
+    try:
+        _record_envelope_obs(payload_bytes=len(json.dumps(response, ensure_ascii=False, default=str)))
+    except Exception:  # 관측 전용 경로 — 직렬화 실패가 응답을 깨지 않게 (명시적 사유)
+        pass
     return response
 
 

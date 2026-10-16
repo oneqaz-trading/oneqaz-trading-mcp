@@ -120,7 +120,8 @@ def _create_mcp_server() -> FastMCP:
             "1. Call `get_prediction_accuracy` first — see verified historical hit rates across macro categories (filter sample_count >= 3).\n"
             "2. Call `get_backtest_tuning_state` — confirm continuous self-calibration (system adapts parameters from real outcomes).\n"
             "3. Call `get_monthly_accuracy_trend` — verify no recent performance degradation.\n"
-            "4. Call `get_news_leading_indicator_performance` — evidence of pre-news detection (average lead time in minutes + accuracy).\n"
+            "4. Call `get_news_leading_indicator_performance` — news pipeline coverage (which event groupings exist, sample counts). "
+            "Marked UNVERIFIED: its lead/score metrics are withheld pending a methodology audit and are NOT evidence of predictive capability.\n"
             "5. Call `get_feature_governance_state` — see which features passed 3-track p-value validation (OBSERVATION/CONDITIONAL/ACTIVE/DEPRECATED).\n"
             "6. Call `get_macro_influence_map` — inspect our explicit causal hypotheses (macro → market with lag_hours + sensitivity).\n"
             "7. Call `get_strategy_leaderboard` — top RL-learned strategies ranked by profit_factor (paper-tested).\n"
@@ -155,7 +156,10 @@ def _create_mcp_server() -> FastMCP:
         fastmcp.settings.streamable_http_path = "/mcp"
         fastmcp.settings.stateless_http = MCP_STATELESS
         fastmcp.settings.json_response = MCP_JSON_RESPONSE
-        fastmcp.settings.show_cli_banner = False  # 배너 출력 비활성화
+        # 배너 출력 비활성화 — 2.x show_cli_banner / 4.x show_server_banner. 4.x 는 없는 필드 대입이
+        # ValidationError(기동 실패)라 실재 필드에만 대입한다 (mcps/fastmcp_compat.py).
+        from oneqaz_trading_mcp.fastmcp_compat import disable_banner
+        disable_banner(fastmcp.settings)
         # MCP 세션 write stream 로그 핸들러 비활성화
         # (stateless 모드에서 ClientDisconnect 후 ClosedResourceError 방지)
         try:
@@ -172,6 +176,17 @@ def _create_mcp_server() -> FastMCP:
     return server
 
 mcp = _create_mcp_server()
+
+# [2026-09-23 ERR-001] 인자 검증 에러가 envelope 을 우회하던 사각지대 수리.
+# FastMCP 는 tool 함수를 부르기 **전에** inputSchema 로 검증하므로, 그 단계 에러는
+# mcp_error() 를 거치지 않아 disclaimer·request_id·error_code 가 통째로 빠지고
+# pydantic 내부 표현이 그대로 외부로 나갔다. 금지항목 5 는 응답 쪽 규정이고
+# 에러 응답도 응답이다.
+try:
+    from oneqaz_trading_mcp.error_envelope_middleware import install as _install_error_envelope
+    _install_error_envelope(mcp)
+except Exception:  # pragma: no cover — 미들웨어 실패가 서버 기동을 막지 않게
+    logger.error("ERR-001 미들웨어 설치 실패", exc_info=True)
 
 # ---------------------------------------------------------------------------
 # 간단한 인메모리 캐시 (TTL 기반)
@@ -346,6 +361,16 @@ TOOL_META = {
                 {"order": 4, "call": "get_position_detail", "type": "tool", "args": {"market_id": "{market_id}", "coin": "{symbol}"}, "purpose": "포지션 상세"},
             ],
         },
+        # [2026-10-15] 엔티티 컨텍스트 — 시장→그룹→종목 연결을 근거·gaps 와 함께 한 호출씩 (req_mcp_entity_context)
+        "entity_context": {
+            "name": "엔티티 연결 컨텍스트",
+            "description": "시장·그룹·종목 중 질문 대상 하나로 시작해 연결(근거·표본 수·검증 상태)과 빈 구간(gaps)을 받는 체인",
+            "steps": [
+                {"order": 1, "call": "get_market_context", "type": "tool", "args": {"market": "{market_id}"}, "purpose": "시장 구조 국면·거시 가설·그룹"},
+                {"order": 2, "call": "get_group_context", "type": "tool", "args": {"group": "{group_id}", "market_id": "{market_id}"}, "purpose": "그룹 상태·멤버·동행 그룹"},
+                {"order": 3, "call": "get_symbol_context", "type": "tool", "args": {"symbol": "{symbol}", "market_id": "{market_id}"}, "purpose": "종목 상태·소속 그룹·lead-lag·뉴스"},
+            ],
+        },
     },
     "dependency_graph": {
         "market://global/summary": {"requires": [], "recommended": [], "next": ["market://global/category/{category}", "market://{market_id}/unified"]},
@@ -362,6 +387,9 @@ TOOL_META = {
         "get_trade_history": {"requires": [], "recommended": [], "next": ["analyze_trades"]},
         "analyze_trades": {"requires": [], "recommended": ["get_trade_history"], "next": ["market://{market_id}/signals/feedback"]},
         "get_latest_decisions": {"requires": [], "recommended": ["market://{market_id}/status"], "next": ["get_trade_history", "get_signals"]},
+        "get_market_context": {"requires": [], "recommended": [], "next": ["get_group_context"]},
+        "get_group_context": {"requires": [], "recommended": [], "next": ["get_symbol_context", "get_market_context"]},
+        "get_symbol_context": {"requires": [], "recommended": [], "next": ["get_group_context", "get_signal_detail"]},
     },
     "usage_hint": {
         "start_here": "market://all/summary 또는 market://indicators/context 에서 시작하세요.",
@@ -414,7 +442,8 @@ async def discovery_manifest() -> str:
                  또는 market://meta/tool-chains 에서 추천 chain 선택.
     [출력 스키마] version, generated_at, positioning{specialist_domains,trust_principles,
                  what_we_do_NOT_provide,philosophy}, catalog{tools_by_category,static_resources,
-                 template_resources,counts}, data_freshness{label→{status,lag_seconds,last_ts}},
+                 template_resources,counts}, data_freshness{label→{status,lag_seconds,last_ts,
+                 source,ts_basis,stale_after_seconds}},
                  market_ids[], common_categories[], notes.
     """
     from datetime import datetime, timezone
@@ -452,7 +481,9 @@ async def discovery_manifest() -> str:
             "templates_hint": "template_resources[*].example 필드를 그대로 붙여 쓰면 즉시 호출 가능.",
             "trust_for_AX": "B2AI credibility 검증용 전용 체인: trust_layer_B_macro → A_leading → E_edge.",
             "freshness_policy": (
-                "data_freshness.{label}.lag_seconds < 3600 이면 status=ok. "
+                "data_freshness.{label}.lag_seconds < stale_after_seconds 이면 status=ok "
+                "(임계는 label 별 — ts_basis 가 bucket_start 인 label 은 기간 시작 시각이라 "
+                "정상이어도 lag 가 기간 길이만큼 커진다). "
                 "stale 이면 해당 카테고리 응답에 추가 지연이 있을 수 있음."
             ),
             "introspection_note": (
@@ -510,6 +541,8 @@ def register_all_tools():
     from oneqaz_trading_mcp.tools.signal_calibration import register_signal_calibration_tools
     # [2026-07-23 R3] 트랙레코드 성과 지표 — 블로그·외부 공용 단일 계산 경로 (A안)
     from oneqaz_trading_mcp.tools.performance_metrics import register_performance_metrics_tools
+    # [2026-10-15] 엔티티 컨텍스트 1차 묶음 (get_symbol/group/market_context) — req_mcp_entity_context Stage A
+    from oneqaz_trading_mcp.tools.entity_context import register_entity_context_tools
 
     register_trade_history_tools(mcp, cache)
     register_position_tools(mcp, cache)
@@ -523,6 +556,13 @@ def register_all_tools():
     register_search_fetch_tools(mcp, cache)
     register_signal_calibration_tools(mcp, cache)
     register_performance_metrics_tools(mcp, cache)
+    register_entity_context_tools(mcp, cache)
+
+    # [2026-10-08 OAuth P3a] 보호 시험 tool — MCP_OAUTH_MODE=on 일 때만(그 외 tools/list 42 불변 — 10-15 엔티티 컨텍스트 3종 추가 후).
+    from oneqaz_trading_mcp.auth_principal import OAUTH_MODE as _OAUTH_MODE
+    if _OAUTH_MODE == "on":
+        from oneqaz_trading_mcp.tools.account_tools import register_account_tools
+        register_account_tools(mcp, cache)
 
     logger.info("✅ All Tools registered")
 
@@ -540,6 +580,15 @@ def create_app():
     register_all_resources()
     register_all_tools()
 
+    # [2026-09-23 PROMPT-001] prompts capability 는 FastMCP 가 **무조건 광고**하는데
+    # 등록이 0건이라 "있다고 해놓고 없는" 상태였다. 진입점 prompt 를 실제로 등록해
+    # 광고와 실물을 일치시킨다.
+    try:
+        from oneqaz_trading_mcp.prompts import install as _install_prompts
+        _install_prompts(mcp)
+    except Exception:
+        logger.error("PROMPT-001 prompts 등록 실패", exc_info=True)
+
     # 공개 /health, /status, /metrics endpoint —
     # cloudflared 2025.8.1 local config path 회귀 우회 (api/routers/health.py 와 동일 응답).
     try:
@@ -547,6 +596,15 @@ def create_app():
         register_health_routes(mcp)
     except Exception as e:
         logger.warning(f"   Health routes 등록 실패 (서버는 계속 실행): {e}")
+
+    # [2026-10-07 OAuth P2] 인가 서버 라우트 — MCP_OAUTH_AS=on 일 때만(기본 off = 등록 0, 종전과 동일).
+    #   켜기 전 선행: AS 쓰기 롤 권한(G2) · 처리방침 갱신(G3). PRM 은 여기서 내지 않는다(설계 D4).
+    if os.getenv("MCP_OAUTH_AS", "off").strip().lower() == "on":
+        try:
+            from oneqaz_trading_mcp.oauth_as import register_oauth_as
+            register_oauth_as(mcp)
+        except Exception:
+            logger.error("[OAUTH] 인가 서버 라우트 등록 실패 — AS 없이 계속 실행", exc_info=True)
 
     return mcp
 
@@ -561,8 +619,18 @@ _ARGS_WHITELIST = (
 
 
 def _summarize_args(arguments) -> str | None:
-    """tools/call arguments → 화이트리스트 요약 JSON 문자열 (최대 8키/600자)."""
-    if not isinstance(arguments, dict) or not arguments:
+    """tools/call arguments → 화이트리스트 요약 JSON 문자열 (최대 8키, 값 60자).
+
+    [2026-10-06 R6 — 사용자 결정: 화이트리스트 유지] 반환값의 의미:
+      - '{}'   : 인자 없이 호출 (종전엔 NULL 이라 "미기록" 과 구분되지 않았다)
+      - JSON   : 화이트리스트 키 요약
+      - None   : 인자는 있으나 화이트리스트 키가 없음 (값을 남기지 않는다)
+    ⚠️ 화이트리스트 확장은 landing/privacy.html 고지 갱신과 짝이다 — 고지 없이 넓히지 말 것.
+    """
+    from oneqaz_trading_mcp.analytics import _ARGS_SUMMARY_MAX
+    if arguments is None or (isinstance(arguments, dict) and not arguments):
+        return "{}"
+    if not isinstance(arguments, dict):
         return None
     import json as _json
     picked = {}
@@ -574,7 +642,12 @@ def _summarize_args(arguments) -> str | None:
     if not picked:
         return None
     try:
-        return _json.dumps(picked, ensure_ascii=False)[:600]
+        out = _json.dumps(picked, ensure_ascii=False)
+        # 문자열 절단은 JSON 을 깨뜨려 소비자(admin demand·Mac mini)가 행을 버린다 → 키 단위로 줄인다.
+        while len(out) > _ARGS_SUMMARY_MAX and picked:
+            picked.popitem()
+            out = _json.dumps(picked, ensure_ascii=False)
+        return out if picked else None
     except Exception:
         return None
 
@@ -597,11 +670,147 @@ def _next_session_seq(mcp_session_id: str | None) -> int | None:
         return _SESSION_SEQ[mcp_session_id]
 
 
+# ── 프로토콜 실패 관측 (2026-10-06, Mac mini 요청서 R1~R4) ─────────────────
+# 종전엔 HTTP 4xx 실패 행의 error_code 가 99.6% NULL 이었다 — 미들웨어가 tool
+# envelope 오류만 회수하고 트랜스포트가 낸 거절 사유는 버렸기 때문이다.
+# 2026-10-06 재현(127.0.0.1 경유, 원장 미기록):
+#   Accept: */*                     → 406 / -32600 "Not Acceptable"
+#   MCP-Protocol-Version: 2026-07-28 → 400 / -32600 "Unsupported protocol version"
+#   Content-Type 누락                → 400 / (평문) "Invalid Content-Type header"
+#   잘못된 JSON·빈 본문              → 400 / -32700
+#   JSON 배열(batch)                 → 400 / -32602
+#   server/discover                  → **200** / -32602  ← HTTP 만 보면 성공으로 보인다
+
+# 이 크기 이하의 성공 응답만 본문을 열어본다 — JSON-RPC 오류·tool isError 는 작다.
+# tools/list(수십 KB)·대형 tool 응답은 열지 않는다(관측이 응답 경로를 무겁게 하면 안 됨).
+_PEEK_MAX_BYTES = 16384
+
+
+from oneqaz_trading_mcp.analytics import api_key_client_id as _api_key_client_id  # noqa: E402
+
+_INPUT_VALUE_RE = None
+
+
+def _scrub_detail(msg: str | None) -> str | None:
+    """오류 메시지에서 호출자 입력값 에코(pydantic input_value=...)를 가린다.
+
+    error_detail 은 결과 메타데이터이지 요청 페이로드 보관소가 아니다
+    (landing/privacy.html §1·§3).
+    """
+    global _INPUT_VALUE_RE
+    if not msg:
+        return None
+    import re
+    if _INPUT_VALUE_RE is None:
+        _INPUT_VALUE_RE = re.compile(r"input_value=('[^']*'|\"[^\"]*\"|[^,\]\s]+)")
+    return _INPUT_VALUE_RE.sub("input_value=<redacted>", msg)
+
+
+def _jsonrpc_outcome(body: bytes) -> tuple[int | None, str | None, bool]:
+    """응답 본문 → (JSON-RPC error.code, 메시지, tool isError 여부).
+
+    json_response 모드(현행)는 순수 JSON 이고, SSE 모드면 마지막 data: 프레임을 본다.
+    본문이 JSON 이 아니면(예: 'Invalid Content-Type header') 평문을 메시지로 돌려준다.
+    """
+    import json as _json
+    text = body.decode("utf-8", "replace").strip() if body else ""
+    if not text:
+        return None, None, False
+    if text.startswith(("event:", "data:")):
+        frames = [ln[5:].strip() for ln in text.splitlines() if ln.startswith("data:")]
+        text = frames[-1] if frames else ""
+    try:
+        obj = _json.loads(text)
+    except ValueError:
+        return None, text[:300], False
+    if not isinstance(obj, dict):
+        return None, None, False
+    err = obj.get("error")
+    if isinstance(err, dict):
+        code = err.get("code")
+        return (code if isinstance(code, int) else None), str(err.get("message") or "")[:300], False
+    res = obj.get("result")
+    if isinstance(res, dict) and res.get("isError") is True:
+        msg = ""
+        for c in res.get("content") or []:
+            if isinstance(c, dict) and c.get("type") == "text":
+                msg = str(c.get("text") or "")
+                break
+        return None, msg[:300], True
+    return None, None, False
+
+
+def _failure_cause(http_status: int, rpc_code: int | None, msg: str | None) -> str:
+    """실패 원인 코드. 메시지 판별이 우선이고, 판별 불가면 http_<status>/rpc_<code>."""
+    m = (msg or "").lower()
+    if "protocol version" in m:
+        return "protocol_version_unsupported"
+    if http_status == 406 or "not acceptable" in m:
+        return "not_acceptable"
+    if "content-type" in m:
+        return "invalid_content_type"
+    # HTTP 상태로 원인이 확정되는 경우는 RPC 코드보다 먼저 본다 — 트랜스포트가 405·404 에도
+    # -32600 을 붙여 보내므로, 순서가 뒤면 HEAD 405 가 'invalid_request' 로 뭉개진다(10-07 실측 23건).
+    if http_status == 405:
+        return "method_not_allowed"
+    if http_status == 404 and "session" in m:
+        return "session_not_found"
+    # [2026-10-07] MCP 2026-07-28 (mcp SDK 2.x / fastmcp 4) 신규 코드 — 2.14 에서는 나오지 않는다(기존 분류 불변).
+    #   -32022 UNSUPPORTED_PROTOCOL_VERSION / -32020 HEADER_MISMATCH(Mcp-Method·Mcp-Name 헤더 ≠ 본문) /
+    #   -32021 MISSING_REQUIRED_CLIENT_CAPABILITY. 매핑이 없으면 -32020 은 'http_400' 으로 뭉개진다(스테이징 실측).
+    if rpc_code == -32022:
+        return "protocol_version_unsupported"
+    if rpc_code == -32020:
+        return "routing_header_mismatch"
+    if rpc_code == -32021:
+        return "client_capability_missing"
+    # 4.x 는 미지원·2026 버전 헤더를 단 요청에 _meta 봉투(protocolVersion·clientCapabilities)를 요구하며
+    # -32602 로 거절한다. 그대로 두면 'invalid_params'(도구 인자 오류)와 섞인다 — 원인이 다르다.
+    if rpc_code == -32602 and "params._meta" in m:
+        return "protocol_envelope_missing"
+    if rpc_code == -32700:
+        return "parse_error"
+    if rpc_code == -32601:
+        return "method_not_found"
+    if rpc_code == -32602:
+        return "invalid_params"
+    if rpc_code == -32600:
+        return "invalid_request"
+    if http_status >= 400:
+        return f"http_{http_status}"
+    return f"rpc_{rpc_code}" if rpc_code is not None else "unclassified"
+
+
+def _identity_for_log(identity: str, api_key: str, client_id: str | None) -> str:
+    """레이트리밋 로그용 식별자 — API 키 원문(앞부분 포함)을 로그에 남기지 않는다.
+
+    키 식별자면 키 지문(`client_id`, sha256 앞 16자), 계정(`acct:…`)·IP 는 그대로.
+    """
+    if api_key and identity == api_key:
+        return f"key:{client_id or '?'}"
+    return identity
+
+
 def _create_rate_limit_middleware():
     """Rate limiting ASGI middleware for external API access (tier-aware)."""
     from starlette.middleware.base import BaseHTTPMiddleware
     from starlette.requests import Request
     from starlette.responses import JSONResponse
+
+    from oneqaz_trading_mcp.onboarding import resolve_ref
+    from oneqaz_trading_mcp.rate_limiter import bucket_for, rate_limit_error_body
+
+    from oneqaz_trading_mcp.auth_principal import (
+        OAUTH_MODE,
+        build_auth_failed_401,
+        build_oauth_401,
+        classify_credential,
+        legacy_api_key,
+        note_shadow_divergence,
+        protected_tools,
+        resolve_oauth_token,
+        shadow_divergence,
+    )
 
     def _set_rate_limit_headers(response, tier_name: str, info: dict) -> None:
         """X-RateLimit-* 표준 헤더 + 트랜스포트가 헤더를 stripping 하는 케이스 대비
@@ -625,6 +834,9 @@ def _create_rate_limit_middleware():
 
             # Phase 1: AI Agent Behavior Analytics — capture user-agent
             user_agent = request.headers.get("user-agent", "")
+            # [2026-10-06 R2] 406(Accept)·400(미지원 버전) 실패를 가르는 1차 사실
+            protocol_version = request.headers.get("mcp-protocol-version") or None
+            accept_header = request.headers.get("accept") or None
 
             # Skip rate limiting + analytics for localhost (internal services).
             # MCP_TRUSTED_IP_PREFIXES (comma-separated) extends the trust list to
@@ -643,60 +855,199 @@ def _create_rate_limit_middleware():
                         _set_rate_limit_headers(response, "internal", {"daily_limit": 0, "remaining_daily": 0, "remaining_minute": 0})
                         return response
 
-            # Resolve tier from API key
-            api_key = request.headers.get("x-api-key") or request.headers.get("authorization", "").removeprefix("Bearer ").strip()
-            tier = "free"
-            if api_key:
-                try:
-                    from api.marketplace.key_store import get_tier_for_key
-                    tier = get_tier_for_key(api_key)
-                except Exception:
-                    pass  # Fall back to free tier if key_store unavailable
-                # [public package] self-hosters plug their own resolver via
-                # MCP_TIER_RESOLVER="module:function" (returns tier for a key).
-                if tier == "free":
-                    resolver_path = os.environ.get("MCP_TIER_RESOLVER", "").strip()
-                    if resolver_path:
-                        try:
-                            mod_name, fn_name = resolver_path.rsplit(":", 1)
-                            import importlib
-                            mod = importlib.import_module(mod_name)
-                            tier = getattr(mod, fn_name)(api_key) or "free"
-                        except Exception:
-                            tier = "free"
-
             # Parse JSON-RPC body for analytics metadata + tier gate.
             # 주의: body 는 한 번만 소진되지만 Starlette 가 내부적으로 캐시하므로
             # downstream FastMCP 핸들러에서 재호출해도 문제없다.
-            req_type, req_name = "mcp", "unknown"
+            # [2026-10-06 R4] 인증보다 앞으로 옮겼다 — 401 거절 행도 무엇을 시도했는지 남긴다.
+            # 파싱 실패는 'unknown' 한 덩어리 대신 원인별 'unparsed:*' 로 기록한다.
+            req_type, req_name = "mcp", f"unparsed:{request.method.lower()}"
             # [2026-07-08] B2AI 수요 원장 필드 — 소급 생성 불가라 지금부터 축적
             args_summary: str | None = None
             client_name: str | None = None
             client_version: str | None = None
+            request_bytes: int | None = None
+            rpc_id = None  # [2026-10-16] 429 본문 id 반사(req_mcp_onboarding OD4) — 알림·파싱 불가면 None
             mcp_session_id = request.headers.get("mcp-session-id") or None
+            # [2026-10-16 OD6] 유입 표시 — 연결 URL ?ref=<id> 를 고정 목록으로 정규화(direct / id / other).
+            ref = resolve_ref(request.scope.get("query_string"))
             if request.method == "POST":
                 try:
                     import json as _json
                     body = await request.body()
-                    payload = _json.loads(body)
-                    method = payload.get("method", "")
-                    params = payload.get("params", {})
-                    if method == "resources/read":
-                        req_type, req_name = "resource", params.get("uri", "unknown")
-                    elif method == "tools/call":
-                        req_type, req_name = "tool", params.get("name", "unknown")
-                        args_summary = _summarize_args(params.get("arguments"))
-                    elif method:
-                        req_type, req_name = "mcp", method
-                        if method == "initialize":
-                            # clientInfo = UA 보다 정확한 클라이언트 신원 (기존엔 폐기됐음)
-                            ci = params.get("clientInfo") or {}
-                            if isinstance(ci, dict):
-                                client_name = str(ci.get("name") or "") or None
-                                client_version = str(ci.get("version") or "") or None
+                    request_bytes = len(body)
+                    if not body.strip():
+                        req_name = "unparsed:empty_body"
+                    else:
+                        try:
+                            payload = _json.loads(body)
+                        except ValueError:
+                            payload = None
+                            req_name = "unparsed:invalid_json"
+                        if isinstance(payload, list):
+                            req_name = "unparsed:batch"
+                        elif payload is not None and not isinstance(payload, dict):
+                            req_name = "unparsed:non_object"
+                        elif isinstance(payload, dict):
+                            rpc_id = payload.get("id")
+                            method = payload.get("method")
+                            method = method.strip() if isinstance(method, str) else ""
+                            params = payload.get("params")
+                            params = params if isinstance(params, dict) else {}
+                            # [2026-10-07 S1/I2] 2026-07-28 스펙 클라이언트는 initialize 없이 **매 요청**
+                            # params._meta["io.modelcontextprotocol/clientInfo"] 로 자기소개한다. 종전엔
+                            # initialize 행에만 client_name 이 있어 세션 식별률 77.7%(Mac 실측).
+                            # 이미 처리방침 고지 항목(clientInfo)이라 새 수집이 아니다.
+                            _meta = params.get("_meta")
+                            if isinstance(_meta, dict):
+                                _mci = _meta.get("io.modelcontextprotocol/clientInfo")
+                                if isinstance(_mci, dict):
+                                    client_name = str(_mci.get("name") or "") or None
+                                    client_version = str(_mci.get("version") or "") or None
+                            if not method:
+                                # 서버 요청에 대한 클라이언트 응답(result/error)은 정상 프로토콜이다.
+                                req_name = ("unparsed:jsonrpc_response"
+                                            if ("result" in payload or "error" in payload)
+                                            else "unparsed:no_method")
+                            elif method == "resources/read":
+                                uri = params.get("uri")
+                                req_type = "resource"
+                                req_name = uri.strip() if isinstance(uri, str) and uri.strip() else "unparsed:no_uri"
+                            elif method == "tools/call":
+                                tname = params.get("name")
+                                req_type = "tool"
+                                req_name = tname.strip() if isinstance(tname, str) and tname.strip() else "unparsed:no_tool_name"
+                                args_summary = _summarize_args(params.get("arguments"))
+                            else:
+                                req_type, req_name = "mcp", method
+                                if method == "initialize":
+                                    # clientInfo = UA 보다 정확한 클라이언트 신원 (기존엔 폐기됐음)
+                                    ci = params.get("clientInfo") or {}
+                                    if isinstance(ci, dict):
+                                        client_name = str(ci.get("name") or "") or None
+                                        client_version = str(ci.get("version") or "") or None
+                                    # 헤더가 없으면 협상 요청 버전을 기록 (initialize 는 헤더 이전 단계)
+                                    pv = params.get("protocolVersion")
+                                    if not protocol_version and isinstance(pv, str):
+                                        protocol_version = pv
                 except Exception:
-                    pass
+                    # 관측 전용 파싱 — 실패해도 요청은 그대로 하위 핸들러로 간다(명시적 사유).
+                    req_name = "unparsed:body_read_failed"
             session_seq = _next_session_seq(mcp_session_id)
+
+            # Resolve tier from API key
+            # [2026-10-07 OAuth P1] 추출은 현행 규칙(legacy_api_key) 그대로 — 응답 동작 불변.
+            #   shadow 모드만 설계 §4-3 접두사 판별을 병행해 차이를 세고, 401 원장 행 주체 칸을 §4-4 로 적는다.
+            api_key = legacy_api_key(request.headers)
+            _cred = None
+            if OAUTH_MODE == "shadow":
+                _cred = classify_credential(request.headers)
+                _div = shadow_divergence(request.headers, _cred)
+                if _div:
+                    note_shadow_divergence(_div, ip)
+            # [2026-10-08 OAuth P3a] on: OAuth Bearer(`oqzat_`·그 외 비-API키 Bearer)는 토큰 저장소로 검증한다 —
+            #   API 키로 조회하지 않는다(그러면 미상 키 401 → 클라이언트 재인가 → 401 루프). X-API-Key 와 함께 와도 OAuth 우선(설계 §4-3).
+            _oauth = None
+            _oauth_store_down = False
+            if OAUTH_MODE == "on":
+                _cred = classify_credential(request.headers)
+                if _cred.kind in ("oauth", "unknown_bearer"):
+                    api_key = ""
+                    _ost, _oauth = (resolve_oauth_token(_cred.secret) if _cred.kind == "oauth" else ("invalid", None))
+                    if _ost == "invalid":
+                        try:
+                            analytics_writer.log_request(
+                                ip=ip, request_type=req_type, name=req_name, success=False, response_ms=0,
+                                error_code="auth_failed", error_detail="http_401: invalid_token",
+                                user_agent=user_agent, args_summary=args_summary,
+                                client_name=client_name, client_version=client_version,
+                                mcp_session_id=mcp_session_id, session_seq=session_seq,
+                                http_status=401, protocol_version=protocol_version, accept_header=accept_header,
+                                client_id=None, request_bytes=request_bytes, principal_type="oauth", ref=ref,
+                            )
+                        except Exception:
+                            pass  # fire-and-forget
+                        return build_oauth_401("invalid_token")
+                    _oauth_store_down = _ost == "unavailable"
+            _pf = ({"principal_type": "oauth", "oauth_client_id": _oauth.oauth_client_id, "account_id": _oauth.account_id}
+                   if _oauth is not None else {})
+            client_id = _api_key_client_id(api_key)
+            tier = "free"
+            plan = None  # None = tier 와 같은 이름의 플랜
+            if api_key:
+                # [2026-09-23 AUTH-001] **키 없음**과 **키가 틀림**을 구분한다.
+                # 키 없음 → free 는 정책이다(공개 discovery 단계, 개인 회원 미수용).
+                # 그러나 키를 **보냈는데** 해석되지 않으면 종전에는 조용히 free 로
+                # 강등돼 200 을 돌려줬다 — 도입자 입장에서 "키 오타 → 원인불명 제한"
+                # 이 되고, 오타를 영영 모른다. 이것이 fail-open 이다.
+                # (get_tier_for_key 는 미상 키에도 "free" 를 돌려주므로 여기서
+                #  키 실재 여부를 직접 확인해야 한다.)
+                from oneqaz_trading_mcp.self_host_auth import KeyStoreUnavailable, lookup_key
+                try:
+                    _key_status, _info = lookup_key(api_key)
+                except KeyStoreUnavailable:
+                    # 키 저장소 장애 — 이때는 401 을 주면 안 된다. 서버 사정으로 남의
+                    # 유효 키를 거부하는 꼴이라 free 로 통과시킨다. 장애 ERROR 로그는
+                    # key_store 가 스로틀해 남긴다(명시적 사유 — 여기서 또 찍으면 장애 중
+                    # 요청마다 트레이스백이 쌓인다).
+                    # [2026-10-06] 종전엔 get_key_info 가 DB 예외를 삼키고 None 을 돌려줘
+                    # 이 분기가 **도달 불가**였다 — PG 장애 순간 유효 pro 키가 401 이었다.
+                    # 코드 결함(KeyStoreUnavailable 외 예외)은 잡지 않는다 — 숨기면 안 된다.
+                    _key_status, _info = "store_unavailable", None
+                if _info is not None:
+                    tier = _info.tier
+                    # [2026-10-07 S2] 한도는 키의 플랜(api.plans), tier gate 는 계속 tier.
+                    plan = _info.effective_plan
+                elif _key_status != "store_unavailable":
+                    logger.warning("[AUTH-001] API 키 거부 (%s, len=%d, ip=%s)", _key_status, len(api_key), ip)
+                    # shadow: Bearer 로 온 비-API키 값은 설계 §4-4 대로 주체 'oauth'·키 지문 NULL (off = None → 현행 파생)
+                    _ptype = _cred.ledger_principal_override if _cred is not None else None
+                    # [2026-10-06] 종전엔 원장 기록 전에 반환해 키 오류가 원장에 0건이었다.
+                    try:
+                        analytics_writer.log_request(
+                            ip=ip, request_type=req_type, name=req_name,
+                            success=False, response_ms=0,
+                            error_code="auth_failed", error_detail=f"http_401: {_key_status} API key",
+                            user_agent=user_agent, args_summary=args_summary,
+                            client_name=client_name, client_version=client_version,
+                            mcp_session_id=mcp_session_id, session_seq=session_seq,
+                            http_status=401, protocol_version=protocol_version,
+                            accept_header=accept_header,
+                            client_id=(None if _ptype == "oauth" else client_id),
+                            request_bytes=request_bytes, principal_type=_ptype, ref=ref,
+                        )
+                    except Exception:
+                        pass  # fire-and-forget
+                    # 본문·헤더는 mcps/auth_principal.py 로 옮겼다 — 바이트 동일(골든 회귀 테스트).
+                    return build_auth_failed_401(_key_status)
+
+            if _oauth is not None:
+                # 계정 플랜이 한도(api.plans)·tier gate 둘 다의 기준이다(플랜 id = tier 이름 free/pro/internal).
+                plan = _oauth.plan
+                tier = _oauth.plan if _oauth.plan in ("free", "pro", "internal") else "free"
+
+            # [2026-10-08 OAuth P3a] 보호 도구의 무자격 호출 → 401 + PRM 포인터 = Claude 의 "계정 연결" 트리거(설계 D3 #3).
+            #   API 키 보유자는 통과. 토큰 저장소 장애면 401 이 재인가 폭주로 번지므로 503(설계 D3 #10).
+            if (OAUTH_MODE == "on" and req_type == "tool" and req_name in protected_tools()
+                    and _oauth is None and not api_key):
+                if _oauth_store_down:
+                    return JSONResponse(status_code=503, headers={"Retry-After": "30"}, content={
+                        "error": True, "error_code": "temporarily_unavailable",
+                        "reason": "Account verification is temporarily unavailable. Try again shortly.",
+                        "retryable": True, "is_investment_advice": False,
+                        "data_classification": "research_information_only"})
+                try:
+                    analytics_writer.log_request(
+                        ip=ip, request_type=req_type, name=req_name, success=False, response_ms=0,
+                        error_code="account_required", error_detail="http_401: account required (PRM pointer)",
+                        user_agent=user_agent, args_summary=args_summary,
+                        client_name=client_name, client_version=client_version,
+                        mcp_session_id=mcp_session_id, session_seq=session_seq,
+                        http_status=401, protocol_version=protocol_version, accept_header=accept_header,
+                        client_id=None, request_bytes=request_bytes, ref=ref,
+                    )
+                except Exception:
+                    pass  # fire-and-forget
+                return build_oauth_401(None)
 
             # Tier gate — 민감 tool/resource 는 상위 티어만 통과.
             from oneqaz_trading_mcp.tier_registry import check_access
@@ -712,6 +1063,9 @@ def _create_rate_limit_middleware():
                         success=False, response_ms=0,
                         error_code=f"tier_blocked_{required_tier}",
                         user_agent=user_agent,
+                        http_status=403, rpc_error_code=-32001,
+                        protocol_version=protocol_version, accept_header=accept_header,
+                        client_id=client_id, tier=tier, request_bytes=request_bytes, ref=ref, **_pf,
                     )
                 except Exception:
                     pass
@@ -739,31 +1093,43 @@ def _create_rate_limit_middleware():
                 _set_rate_limit_headers(tg_response, tier, {"daily_limit": 0, "remaining_daily": 0, "remaining_minute": 0})
                 return tg_response
 
-            # Rate limit by API key (if pro) or IP (if free)
-            identity = api_key if (api_key and tier != "free") else ip
-            allowed, info = rate_limiter.check(identity, tier=tier)
+            # Rate limit by API key (if pro) or IP (if free). OAuth = 계정 단위(플랫폼 egress IP 공유 문제 해소 — 설계 D3).
+            identity = (f"acct:{_oauth.account_id}" if _oauth is not None
+                        else (api_key if (api_key and tier != "free") else ip))
+            # [2026-10-16 OD3] 데이터 호출(tools/call·resources/read·prompts/get)만 플랜 한도(일·분)를 쓰고,
+            #   프로토콜 왕복(initialize·notifications·*/list·ping·파싱 불가)은 별도 분당 버킷 — 일 한도 불소모.
+            _bucket = bucket_for(req_type, req_name)
+            if _bucket == "data":
+                allowed, info = rate_limiter.check(identity, tier=(plan or tier))
+            else:
+                allowed, info = rate_limiter.check_protocol(identity, tier=(plan or tier))
             if not allowed:
-                logger.warning("Rate limited: %s (tier=%s) — %s", identity[:16] if len(identity) > 16 else identity, tier, info.get("limit_type"))
+                # [2026-10-16 진단 X2] 종전 identity[:16] 은 pro 키면 키 앞 16자를 로그에 남겼다 → 키 지문으로.
+                logger.warning("Rate limited: %s (tier=%s) — %s/%s",
+                               _identity_for_log(identity, api_key, client_id), tier,
+                               info.get("bucket"), info.get("limit_type"))
                 try:
+                    # [2026-10-16] 원래 대상(tool·method 이름)을 남긴다 — 종전 name='rate_limited' 는 무엇이 막혔는지
+                    #   지웠다. 구분은 rate_limited=true · error_code='rate_limited'(종전과 같음).
                     analytics_writer.log_request(
-                        ip=ip, request_type="mcp", name="rate_limited",
+                        ip=ip, request_type=req_type, name=req_name,
                         success=False, response_ms=0,
                         error_code="rate_limited", rate_limited=True,
-                        user_agent=user_agent,
+                        error_detail=f"http_429 {info.get('bucket')}/{info.get('limit_type')}",
+                        user_agent=user_agent, args_summary=args_summary,
+                        client_name=client_name, client_version=client_version,
+                        mcp_session_id=mcp_session_id, session_seq=session_seq,
+                        http_status=429, rpc_error_code=-32000,
+                        protocol_version=protocol_version, accept_header=accept_header,
+                        client_id=client_id, tier=tier, request_bytes=request_bytes, ref=ref, **_pf,
                     )
                 except Exception:
                     pass
+                rl_body = rate_limit_error_body(rpc_id, info)
                 rl_response = JSONResponse(
                     status_code=429,
-                    content={
-                        "jsonrpc": "2.0",
-                        "error": {
-                            "code": -32000,
-                            "message": info["message"],
-                            "data": info,
-                        }
-                    },
-                    headers={"Retry-After": str(info.get("retry_after", 60))},
+                    content=rl_body,
+                    headers={"Retry-After": str(rl_body["error"]["data"]["retry_after_sec"])},
                 )
                 _set_rate_limit_headers(rl_response, tier, info)
                 return rl_response
@@ -781,33 +1147,94 @@ def _create_rate_limit_middleware():
                 # 심은 관측(에러코드/페이로드 크기)을 여기서 회수한다.
                 env_error_code: str | None = None
                 env_payload_bytes: int | None = None
+                result_shape: dict = {}
                 try:
                     obs = (request.scope.get("state") or {}).get("mcp_envelope_obs") or {}
                     env_error_code = obs.get("error_code") or None
                     env_payload_bytes = obs.get("payload_bytes") or None
+                    result_shape = obs.get("result_shape") or {}
                 except Exception:
                     pass
                 response_bytes = env_payload_bytes
+                content_length: int | None = None
                 try:
                     cl = response.headers.get("content-length")
                     if cl:
-                        response_bytes = int(cl)
+                        content_length = int(cl)
+                        response_bytes = content_length
                 except Exception:
                     pass
+
+                # [2026-10-06 R1] 실패 사유 회수 — 실패 응답과 작은 성공 응답만 본문을 연다.
+                # 본문은 소진 후 그대로 재생하므로 클라이언트가 받는 바이트는 불변이다.
+                rpc_code: int | None = None
+                err_code = env_error_code
+                err_detail: str | None = None
+                peek = response.status_code >= 400 or (
+                    content_length is not None and content_length <= _PEEK_MAX_BYTES
+                )
+                if peek:
+                    # 소진 실패는 원 응답도 어차피 깨진 경우다 → 바깥 except 가 'exception' 으로 기록.
+                    chunks = [c async for c in response.body_iterator]
+
+                    async def _replay(_chunks=chunks):
+                        for _c in _chunks:
+                            yield _c
+
+                    response.body_iterator = _replay()
+                    try:
+                        rpc_code, rpc_msg, tool_is_error = _jsonrpc_outcome(b"".join(
+                            c if isinstance(c, bytes) else str(c).encode("utf-8") for c in chunks
+                        ))
+                        if response.status_code >= 400 or rpc_code is not None:
+                            err_code = _failure_cause(response.status_code, rpc_code, rpc_msg)
+                            err_detail = _scrub_detail(
+                                f"http_{response.status_code} rpc={rpc_code}: {rpc_msg or ''}"
+                            )[:200]
+                        elif tool_is_error:
+                            # FastMCP ToolError(인자 검증 실패 등)는 HTTP 200 + result.isError.
+                            err_code = env_error_code or "tool_error"
+                            err_detail = _scrub_detail(f"tool_error: {rpc_msg or ''}")[:200]
+                    except Exception:
+                        # 판독(파싱·분류) 결함 — 응답 자체는 재생 iterator 로 그대로 나간다.
+                        # 관측 결함이 정상 응답을 죽이면 안 되므로 삼키되, 코드 결함이라 ERROR.
+                        logger.error("[R1] 응답 본문 판독 실패 (%s %s)", req_type, req_name, exc_info=True)
 
                 try:
                     analytics_writer.log_request(
                         ip=ip, request_type=req_type, name=req_name,
                         success=success, response_ms=elapsed_ms,
-                        error_code=env_error_code,
+                        error_code=err_code,
+                        error_detail=err_detail,
                         user_agent=user_agent,
                         args_summary=args_summary,
                         client_name=client_name, client_version=client_version,
                         mcp_session_id=mcp_session_id, session_seq=session_seq,
                         response_bytes=response_bytes,
+                        http_status=response.status_code, rpc_error_code=rpc_code,
+                        protocol_version=protocol_version, accept_header=accept_header,
+                        client_id=client_id, tier=tier, request_bytes=request_bytes,
+                        result_count=result_shape.get("result_count"),
+                        result_truncated=result_shape.get("result_truncated"),
+                        total_available=result_shape.get("total_available"),
+                        empty_result=result_shape.get("empty_result"),
+                        envelope_error_code=env_error_code, ref=ref, **_pf,
                     )
                 except Exception:
                     pass  # fire-and-forget
+
+                # [2026-10-15] 엔티티 컨텍스트 호출 원장 (req_mcp_entity_context ED8) — tool 이 scope 에 맡긴 요약을
+                # mcp_requests 와 같은 IP 규칙(위에서 127.0.0.1·신뢰 대역은 이미 빠졌다)으로 기록한다. IP 는 넘기지 않는다.
+                # 스위치(MCP_ENTITY_CALLS_LOG)가 off 면 tool 이 요약을 만들지 않아 여기 도달하지 않는다.
+                try:
+                    _ec = ((request.scope.get("state") or {}).get("mcp_envelope_obs") or {}).get("entity_call")
+                    if _ec:
+                        from oneqaz_trading_mcp.analytics import classify_traffic as _classify_traffic
+                        from oneqaz_trading_mcp.entity.calls_log import entity_calls_writer
+                        entity_calls_writer.log_entry(_ec, ts=int(t0),
+                                                      traffic_class=_classify_traffic(ip, user_agent))
+                except Exception:
+                    logger.error("entity calls: 원장 기록 넘김 실패", exc_info=True)
 
                 # Enhanced rate limit headers (body meta는 streaming response 위험으로 헤더만 사용)
                 _set_rate_limit_headers(response, tier, info)
@@ -818,12 +1245,14 @@ def _create_rate_limit_middleware():
                     analytics_writer.log_request(
                         ip=ip, request_type=req_type, name=req_name,
                         success=False, response_ms=elapsed_ms,
-                        error_detail=str(exc)[:200],
+                        error_detail=(_scrub_detail(str(exc)) or "")[:200],
                         error_code="exception",
                         user_agent=user_agent,
                         args_summary=args_summary,
                         client_name=client_name, client_version=client_version,
                         mcp_session_id=mcp_session_id, session_seq=session_seq,
+                        protocol_version=protocol_version, accept_header=accept_header,
+                        client_id=client_id, tier=tier, request_bytes=request_bytes, ref=ref, **_pf,
                     )
                 except Exception:
                     pass  # fire-and-forget
@@ -838,14 +1267,37 @@ def run_server():
 
     # [2026-07-08] 예측 원장 해시 체인 — 시간당 due-check (완결된 UTC 일자만 계산).
     # append-only 증거는 소급 생성이 불가능하므로 서버 기동마다 자동 재개된다.
+    # [2026-10-07] 스테이징(두 번째 MCP 인스턴스)은 이 스레드를 켜면 안 된다 — prediction_ledger_hashes
+    #   INSERT 에 ON CONFLICT 가 없어 운영 인스턴스와 경합한다. 기본은 켜짐(운영 동작 불변).
+    if os.getenv("MCP_LEDGER_THREAD_DISABLED", "0") == "1":
+        logger.warning("Prediction ledger hash thread 비활성 (MCP_LEDGER_THREAD_DISABLED=1 — 스테이징 전용)")
+    else:
+        try:
+            from oneqaz_trading_mcp.ledger_integrity import start_daily_thread
+            start_daily_thread()
+        except Exception as e:
+            logger.warning(f"Prediction ledger hash thread 시작 실패 (서버는 계속 실행): {e}")
+
+    # [2026-10-08] OAuth 표 보존 정리 — 하루 1회(첫 실행 10분 뒤). 표가 비어 있으면 0건.
+    #   설계 §4-5 · 처리방침 초안 03절의 약속을 지키는 유일한 경로. 끄기 = OAUTH_RETENTION_DISABLED=1.
     try:
-        from oneqaz_trading_mcp.ledger_integrity import start_daily_thread
-        start_daily_thread()
-    except Exception as e:
-        logger.warning(f"Prediction ledger hash thread 시작 실패 (서버는 계속 실행): {e}")
+        from oneqaz_trading_mcp.oauth_store import start_oauth_retention_thread
+        start_oauth_retention_thread()
+    except Exception:
+        logger.error("[OAUTH] 보존 정리 스레드 시작 실패 (서버는 계속 실행)", exc_info=True)
 
     # Rate limiting middleware 생성
     _middleware_list = []
+    # [2026-10-16 req_mcp_onboarding OD2] `/mcp/` → `/mcp` 를 라우팅 전에 바꾼다(가장 바깥).
+    #   종전엔 Starlette redirect_slashes 가 터널 뒤에서 `Location: http://…` 307 을 내 평문으로 강등됐다.
+    #   레이트리밋 미들웨어와 분리한다 — 그쪽 생성이 실패해도 이 수리는 남아야 한다.
+    try:
+        from starlette.middleware import Middleware as _StarletteMiddleware
+        from oneqaz_trading_mcp.onboarding import McpPathNormalizeMiddleware
+        _middleware_list.append(_StarletteMiddleware(McpPathNormalizeMiddleware))
+    except Exception:
+        logger.error("[onboarding] /mcp/ 경로 정규화 미들웨어 생성 실패 — 끝 슬래시 요청이 http 307 로 강등된다",
+                     exc_info=True)
     try:
         from starlette.middleware import Middleware as _StarletteMiddleware
         RateLimitMiddleware = _create_rate_limit_middleware()

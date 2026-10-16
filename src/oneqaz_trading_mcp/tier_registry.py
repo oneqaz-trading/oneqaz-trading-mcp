@@ -91,11 +91,20 @@ TOOL_TIERS: Dict[str, str] = {
     "get_feature_governance_status": "free",
     "get_feature_governance_status_tool": "free",
 
+    # ---- Account (OAuth P3a, 2026-10-08) ----
+    # tier 는 free 지만 **계정 연결 게이트는 별도**다 — MCP_OAUTH_MODE=on 일 때 RateLimitMiddleware 가
+    # OAUTH_PROTECTED_TOOLS(기본 get_account_status) 의 무자격 호출에 401 + PRM 포인터를 준다(mcps/auth_principal.py).
+    "get_account_status": "free",
+
     # ---- Signal / decision evidence ----
     # 페이퍼트레이딩 시그널 = 사용자 자금 아님. AI trust 검증의 핵심 evidence.
     "get_signals": "free",
     "get_signal_detail": "free",
     "explain_decision": "free",
+    # [2026-10-15] 엔티티 컨텍스트 1차 묶음 (req_mcp_entity_context Stage A)
+    "get_symbol_context": "free",
+    "get_group_context": "free",
+    "get_market_context": "free",
 
     # ---- Paper trading results (positions/trades/decisions) ----
     # 모두 가상매매 결과 — OneQAZ 시스템이 시그널로 운용한 가상 포지션/거래.

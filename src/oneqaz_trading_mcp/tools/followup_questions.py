@@ -86,21 +86,23 @@ def fq_monthly_trend(data: Dict[str, Any]) -> List[str]:
 
 
 def fq_news_lead(data: Dict[str, Any]) -> List[str]:
+    # [2026-09-18 Ticket A] 선행 감지를 전제한 질문 제거 — 계산 방법 감사 중.
     indicators = data.get("indicators") or []
     qs = []
     if indicators:
-        qs.append("이 선행 감지가 anticipated 와 surprise 로 어떻게 분류되는지 자세히 볼까요?")
-    qs.append("선행 감지에 쓰이는 feature 들이 통계 검증을 통과했는지 확인해드릴까요?")
+        qs.append("뉴스 이벤트가 anticipated / surprise 라벨로 각각 몇 건인지 볼까요?")
+    qs.append("뉴스 계열 feature 들이 통계 검증의 어느 단계인지 확인해드릴까요?")
     return qs
 
 
 def fq_news_causality(data: Dict[str, Any]) -> List[str]:
+    # [2026-09-18 Ticket A] "사전 감지" 전제 및 lead time 질문 제거.
     breakdown = data.get("breakdown") or {}
     qs = []
     if breakdown.get("anticipated"):
         n = breakdown["anticipated"].get("count", 0)
-        qs.append(f"사전 감지된 {n}건의 lead time 분포를 더 자세히 보시겠어요?")
-    qs.append("이 분류가 OneQAZ 의 정적 macro 인과 가설과 일치하는지 비교해볼까요?")
+        qs.append(f"anticipated 라벨 {n}건이 어떤 캘린더 이벤트에 매칭됐는지 볼까요?")
+    qs.append("이 라벨 분포가 OneQAZ 의 정적 macro 인과 가설과 일치하는지 비교해볼까요?")
     return qs
 
 

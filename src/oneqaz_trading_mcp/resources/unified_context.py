@@ -232,18 +232,36 @@ def _load_external_symbol_snapshot(market_id: str, symbol: str) -> Dict[str, Any
         result = {}
         sym = symbol.upper()
         if _table_exists(conn, "news_events"):
-            result["news"] = _fetch_rows(conn, """
-                SELECT title, sentiment_score, sentiment_label, sentiment_confidence,
-                       sentiment_model, risk_flags, impact_level, published_at
-                FROM news_events
-                WHERE UPPER(symbol) = ? OR symbol = 'GLOBAL'
-                ORDER BY COALESCE(published_at, created_at) DESC LIMIT 5
-            """, (sym,))
+            # [2026-10-13] 전역 뉴스는 이 시장 범위(target_markets)에 든 것만 — 종전 `OR symbol='GLOBAL'` 은
+            #   다른 시장으로 분배된 뉴스까지 전부 붙였다(BTC 컨텍스트에 국내 금리 기사). 표식 symbol 은
+            #   수집기 재upsert 로 GLOBAL_NEWS↔GLOBAL 이 오가므로 둘 다 본다. 범위 = news_scope.py.
+            from oneqaz_trading_mcp.resources.external_context import _NEWS_MARKETS, _norm_market_id, IMPACT_LEVEL_BASIS
+            scope = _norm_market_id(market_id)
+            if scope in _NEWS_MARKETS:
+                result["news"] = _fetch_rows(conn, """
+                    SELECT title, sentiment_score, sentiment_label, sentiment_confidence,
+                           sentiment_model, risk_flags, impact_level, published_at
+                    FROM news_events
+                    WHERE UPPER(symbol) = ?
+                       OR (symbol IN ('GLOBAL', 'GLOBAL_NEWS') AND ? = ANY(target_markets))
+                    ORDER BY COALESCE(published_at, created_at) DESC LIMIT 5
+                """, (sym, scope))
+            else:
+                result["news"] = _fetch_rows(conn, """
+                    SELECT title, sentiment_score, sentiment_label, sentiment_confidence,
+                           sentiment_model, risk_flags, impact_level, published_at
+                    FROM news_events
+                    WHERE UPPER(symbol) = ? OR symbol = 'GLOBAL'
+                    ORDER BY COALESCE(published_at, created_at) DESC LIMIT 5
+                """, (sym,))
+            result["impact_level_basis"] = IMPACT_LEVEL_BASIS
         if _table_exists(conn, "scheduled_events"):
+            # [2026-10-14 H7#2-b] 1일 창 — 날짜가 지났는데 'upcoming' 으로 남은 행(10-14 실측 475)이 앞자리를 독점했다
             result["events"] = _fetch_rows(conn, """
                 SELECT title, expected_impact, scheduled_at, status
                 FROM scheduled_events
                 WHERE (UPPER(symbol) = ? OR symbol = 'GLOBAL') AND status = 'upcoming'
+                  AND scheduled_at >= NOW() - INTERVAL '1 day'
                 ORDER BY scheduled_at ASC LIMIT 3
             """, (sym,))
         if _table_exists(conn, "fundamentals"):
@@ -340,9 +358,11 @@ def _load_global_events_affecting(market_id: str) -> List[Dict[str, Any]]:
             continue
         try:
             if _table_exists(cat_conn, "scheduled_events"):
+                # [2026-10-14 H7#2-b] 1일 창 — 지난 'upcoming' 잔재(DART 공시)가 앞 5건을 독점했다
                 rows = _fetch_rows(cat_conn, """
                     SELECT title, expected_impact, scheduled_at, status
                     FROM scheduled_events WHERE status = 'upcoming'
+                      AND scheduled_at >= NOW() - INTERVAL '1 day'
                     ORDER BY scheduled_at ASC LIMIT 5
                 """)
                 for row in rows:
@@ -420,24 +440,47 @@ def _load_market_external_summary(market_id: str) -> Dict[str, Any]:
     try:
         result = {}
         if _table_exists(conn, "news_events"):
-            rows = _fetch_rows(conn, """
-                SELECT title, sentiment_score, sentiment_label, sentiment_confidence,
-                       sentiment_model, risk_flags, impact_level, published_at, symbol
-                FROM news_events
-                ORDER BY COALESCE(published_at, created_at) DESC LIMIT 10
-            """)
+            # [2026-10-13] 시장 범위 필터 — 종전엔 3시장이 같은 전역 최신 10건을 받았고, 이 목록이
+            #   LLM 시장 에이전트의 '[최근 관련 뉴스]' 로 그대로 들어갔다(llm_factory/agents/market_agent.py).
+            from oneqaz_trading_mcp.resources.external_context import (
+                _NEWS_MARKETS, _norm_market_id, IMPACT_LEVEL_BASIS, fetch_market_news,
+            )
+            scope = _norm_market_id(market_id)
+            if scope in _NEWS_MARKETS:
+                # 시장 전용 몫(최근 72h, 4건)과 범위 내 최신을 번갈아 — fetch_market_news docstring 참조
+                rows, result["news_composition"] = fetch_market_news(
+                    conn, scope,
+                    "id, title, sentiment_score, sentiment_label, sentiment_confidence, sentiment_model, "
+                    "risk_flags, impact_level, published_at, symbol, target_markets",
+                    limit=10, quota=4,
+                )
+            else:
+                rows = _fetch_rows(conn, """
+                    SELECT title, sentiment_score, sentiment_label, sentiment_confidence,
+                           sentiment_model, risk_flags, impact_level, published_at, symbol
+                    FROM news_events
+                    ORDER BY COALESCE(published_at, created_at) DESC LIMIT 10
+                """)
             result["recent_news"] = rows
+            result["news_scope"] = scope if scope in _NEWS_MARKETS else "unfiltered"
+            # 키 이름은 계약 유지(값 의미 = 매크로 주제 키워드 등급 high 건수 — 실측 영향도 아님)
             high_impact = [r for r in rows if r.get("impact_level") == "high"]
             result["high_impact_news_count"] = len(high_impact)
+            result["impact_level_basis"] = IMPACT_LEVEL_BASIS
             risk_news = [r for r in rows if r.get("risk_flags") and r["risk_flags"] != "[]"]
             result["risk_flagged_news_count"] = len(risk_news)
 
         if _table_exists(conn, "scheduled_events"):
-            rows = _fetch_rows(conn, """
-                SELECT title, expected_impact, scheduled_at, symbol
-                FROM scheduled_events WHERE status = 'upcoming'
-                ORDER BY scheduled_at ASC LIMIT 5
-            """)
+            # [2026-10-14 H7#2-b] 1일 창 + 시장 범위(external_context.py::fetch_scheduled_events)
+            from oneqaz_trading_mcp.resources.external_context import (
+                _NEWS_MARKETS as _nm, _norm_market_id as _norm, fetch_scheduled_events as _fse,
+            )
+            _scope = _norm(market_id)
+            rows = _fse(
+                conn, _scope if _scope in _nm else None,
+                "title, expected_impact, scheduled_at, symbol, source, status",
+                limit=5, extra_where="AND status = 'upcoming'",
+            )
             result["upcoming_events"] = rows
 
         if _table_exists(conn, "market_metrics"):

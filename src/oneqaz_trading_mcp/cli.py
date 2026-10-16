@@ -7,7 +7,21 @@ import argparse
 import sys
 
 
+def _console_safe() -> None:
+    """Windows consoles (cp949/cp1252) cannot encode the emoji in server logs.
+
+    Without this, every such log line prints a ``--- Logging error ---`` traceback.
+    Unencodable characters are replaced instead; UTF-8 consoles are unaffected.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass  # not a reconfigurable text stream (e.g. replaced by a test harness)
+
+
 def main():
+    _console_safe()
     parser = argparse.ArgumentParser(
         prog="oneqaz-trading-mcp",
         description="MCP server for trading signal analysis and market monitoring",
@@ -20,7 +34,7 @@ def main():
     serve_parser.add_argument("--host", type=str, default=None, help="Bind host (default: 0.0.0.0)")
 
     # init
-    sub.add_parser("init", help="Initialize database schema and sample data")
+    sub.add_parser("init", help="Deprecated (SQLite demo backend retired in 0.4.0)")
 
     # check
     sub.add_parser("check", help="Check data path configuration")
@@ -29,6 +43,9 @@ def main():
 
     if args.command == "serve":
         import os
+        # PostgreSQL is the only supported backend; the mirrored config treats an unset
+        # DB_BACKEND as the retired SQLite backend and refuses every query.
+        os.environ.setdefault("DB_BACKEND", "postgres")
         if args.port:
             os.environ["MCP_SERVER_PORT"] = str(args.port)
         if args.host:
@@ -52,7 +69,7 @@ def main():
     elif args.command == "init":
         print(
             "DEPRECATED (0.4.0): the SQLite demo backend was retired when this\n"
-            "package became a faithful mirror of the production server, which is\n"
+            "package switched to mirroring the production server code, which is\n"
             "PostgreSQL-only. Self-hosting now requires a OneQAZ-compatible\n"
             "PostgreSQL (see README > Self-hosting). For evaluation, use the\n"
             "hosted endpoint instead: https://api.oneqaz.com/mcp"

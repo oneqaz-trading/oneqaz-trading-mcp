@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from oneqaz_trading_mcp.config import CACHE_TTL_MARKET_STATUS, get_external_db_path, connect_readonly
 from oneqaz_trading_mcp.resources.resource_response import (
@@ -50,6 +50,90 @@ _MKT_ID_NORM = {
     "kr": "kr_market", "kr_stock": "kr_market", "kr_market": "kr_market",
     "us": "us_market", "us_stock": "us_market", "us_market": "us_market",
 }
+
+
+# [2026-10-13] 뉴스 시장 범위 어휘(news_events.target_markets) — external_context/core/news_scope.py::MARKETS 와 같다.
+_NEWS_MARKETS = ("coin_market", "kr_market", "us_market")
+# [2026-10-13] impact_level 근거 — 실측 시장 영향도가 아니라 매크로 주제 키워드 일치 등급이다
+#   (실측: GLOBAL 뉴스 약 90% 가 high, high/medium/low 간 시그널 반응 크기 차이 없음).
+#   응답에 함께 실어 소비자(AI·사람)가 '고영향' 으로 인용하지 않게 한다.
+IMPACT_LEVEL_BASIS = "keyword_topic_rule_not_measured_impact"
+
+
+# [2026-10-13] 시장 전용 뉴스 몫. 전역 매크로 피드(하루 수백 건)가 범위 내 최신 목록을 채워, 크립토 요약의
+#   최신 30건에 크립토 출처 기사가 거의 없었다(크립토 RSS 하루 약 25건). 시장 전용 = 3시장 공통이 아닌 행.
+_MARKET_SPECIFIC_LOOKBACK_H = 72
+
+
+def fetch_market_news(
+    conn: object, scope: str, cols: str, limit: int, quota: int,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """시장 범위 뉴스 — 시장 전용(최근 72h, quota 까지)과 범위 내 최신을 **번갈아** 섞는다.
+
+    번갈아 섞는 이유: 소비자(LLM 시장 에이전트 '[최근 관련 뉴스]', _llm_summary)는 앞의 5건만 쓴다 —
+    시간순 병합이면 전용 기사가 뒤로 밀려 다시 안 보이고, 전용 우선이면 연준 같은 전역 매크로가 빠진다.
+    cols 에는 id·target_markets 가 있어야 한다. 반환 = (행, 구성 메타).
+    """
+    specific = _fetch_all(
+        conn,
+        f"SELECT {cols} FROM news_events "
+        "WHERE ? = ANY(target_markets) AND cardinality(target_markets) < 3 "
+        "  AND COALESCE(published_at, created_at) > NOW() - make_interval(hours => ?) "
+        "ORDER BY COALESCE(published_at, created_at) DESC LIMIT ?",
+        (scope, _MARKET_SPECIFIC_LOOKBACK_H, quota),
+    )
+    recent = _fetch_all(
+        conn,
+        f"SELECT {cols} FROM news_events WHERE ? = ANY(target_markets) "
+        "ORDER BY COALESCE(published_at, created_at) DESC LIMIT ?",
+        (scope, limit),
+    )
+    taken = {r["id"] for r in specific}
+    rest = [r for r in recent if r["id"] not in taken]
+    merged: List[Dict[str, Any]] = []
+    si = ri = 0
+    while len(merged) < limit and (si < len(specific) or ri < len(rest)):
+        if si < len(specific):
+            merged.append(specific[si])
+            si += 1
+        if len(merged) < limit and ri < len(rest):
+            merged.append(rest[ri])
+            ri += 1
+    n_specific = sum(1 for r in merged if len(r.get("target_markets") or ()) < len(_NEWS_MARKETS))
+    return merged, {
+        "order": "interleaved: market-specific (last 72h, up to quota) / most recent in scope",
+        "market_specific_quota": quota,
+        "market_specific": n_specific,
+        "multi_market": len(merged) - n_specific,
+    }
+
+
+# [2026-10-14 H7#2-b, Mac rev.3] 예정 이벤트 — 종전 `status='upcoming' OR scheduled_at >= now ORDER BY scheduled_at ASC`
+#   는 날짜가 지났는데 상태가 'upcoming' 으로 남은 행(10-14 실측 475: dart 441 · yfinance 34)이 오름차순 맨 앞을
+#   독점해 "예정 이벤트" 20건이 지난 DART 공시로 채워졌고(Mac 실측 19/20), 시장 필터도 없어 미장 요약에도 나왔다.
+#   ⇒ 창 = scheduled_at ≥ 지금 − 1일(방금 발표된 이벤트는 남긴다) · 시장 범위 = external_context/core/news_scope.py
+#   ::event_target_markets(읽기 시점 — 테이블에 시장 컬럼 없음). 'upcoming' 이 전진하지 않는 writer 결함은 별도.
+SCHEDULED_EVENTS_WINDOW = "scheduled_at >= now() - 1 day"
+
+
+def fetch_scheduled_events(
+    conn: object, scope: Any, cols: str, limit: int, extra_where: str = "", params: tuple = (),
+) -> List[Dict[str, Any]]:
+    """예정 이벤트 — 지난 'upcoming' 잔재를 빼고(1일 창) scope(시장 어휘) 범위만, 일정 오름차순 limit 건.
+
+    scope 가 None(매크로 카테고리 등)이면 시장 필터 없이 창만 적용한다.
+    """
+    from oneqaz_trading_mcp.external_context.core.news_scope import event_target_markets
+    rows = _fetch_all(
+        conn,
+        f"SELECT {cols} FROM scheduled_events "
+        f"WHERE scheduled_at >= NOW() - INTERVAL '1 day' {extra_where} "
+        "ORDER BY scheduled_at ASC LIMIT 1000",
+        params,
+    )
+    if scope:
+        rows = [r for r in rows if scope in event_target_markets(r.get("source"), r.get("symbol"))]
+    return rows[:limit]
 
 
 def _norm_market_id(market_id: str) -> str:
@@ -156,37 +240,41 @@ def _load_external_summary(market_id: str) -> Dict[str, Any]:
                 _news_db = resolve_db_path(market_id, "news_events")
             except ImportError:
                 _news_db = db_path
+            # [2026-10-13] 시장 범위 필터 — news_events 는 시장 컬럼 없는 단일 전역 테이블이라 종전엔
+            #   3시장 요약이 같은 전역 최신 30건이었다(미장 요약 1위 = 국내 '5만원권 환수율' 기사).
+            #   target_markets = external_context/core/news_scope.py 산출(분배 단계가 기록).
+            #   매크로 카테고리 id(bonds/forex…)는 시장이 아니므로 종전대로 무필터.
+            _news_scope = _mkt if _mkt in _NEWS_MARKETS else None
+            news_composition: Dict[str, Any] = {}
+            _news_cols = (
+                "id, symbol, title, sentiment_score, sentiment_label, sentiment_confidence, "
+                "sentiment_model, risk_flags, impact_level, status, source, published_at, "
+                "sector, event_type, lifecycle_stage, target_markets"
+            )
             if _news_db:  # [2026-07-03] PG 논리 키 — 파일 존재 검사 제거
                 _news_conn = connect_readonly(_news_db, timeout=20) if _news_db != db_path else conn
                 try:
-                    news_events = _fetch_all(
-                        _news_conn,
-                        """
-                        SELECT id, symbol, title, sentiment_score,
-                               sentiment_label, sentiment_confidence, sentiment_model, risk_flags,
-                               impact_level, status, source, published_at,
-                               sector, event_type, lifecycle_stage
-                        FROM news_events
-                        ORDER BY COALESCE(published_at, created_at) DESC
-                        LIMIT 30
-                        """,
-                    ) if _table_exists(_news_conn, "news_events") else []
+                    if not _table_exists(_news_conn, "news_events"):
+                        news_events = []
+                    elif _news_scope:
+                        news_events, news_composition = fetch_market_news(
+                            _news_conn, _news_scope, _news_cols, limit=30, quota=10,
+                        )
+                    else:
+                        news_events = _fetch_all(
+                            _news_conn,
+                            f"SELECT {_news_cols} FROM news_events "
+                            "ORDER BY COALESCE(published_at, created_at) DESC LIMIT 30",
+                        )
                 finally:
                     if _news_db != db_path:
                         _news_conn.close()
 
-            now_iso = datetime.now(timezone.utc).isoformat()
-            scheduled_events = _fetch_all(
-                conn,
-                """
-                SELECT id, symbol, event_type, title, status, confidence, expected_impact,
-                       scheduled_at, source, created_at
-                FROM scheduled_events
-                WHERE status = 'upcoming' OR scheduled_at >= ?
-                ORDER BY scheduled_at ASC
-                LIMIT 20
-                """,
-                (now_iso,),
+            scheduled_events = fetch_scheduled_events(
+                conn, _news_scope,
+                "id, symbol, event_type, title, status, confidence, expected_impact, "
+                "scheduled_at, source, created_at",
+                limit=20,
             ) if _table_exists(conn, "scheduled_events") else []
 
             market_metrics = _fetch_all(
@@ -245,6 +333,15 @@ def _load_external_summary(market_id: str) -> Dict[str, Any]:
                 "symbol_master": symbol_master,
                 "fundamentals": fundamentals,
                 "news_events": news_events,
+                # [2026-10-13] 뉴스 목록의 범위와 impact_level 의 의미를 명시 (additive)
+                "news_scope": _news_scope or "unfiltered",
+                "news_composition": news_composition,
+                # [2026-10-14 H7#2-b] 예정 이벤트도 같은 시장 범위 + 1일 창
+                "scheduled_events_filter": {
+                    "window": SCHEDULED_EVENTS_WINDOW,
+                    "scope": _news_scope or "unfiltered",
+                },
+                "impact_level_basis": IMPACT_LEVEL_BASIS,
                 "scheduled_events": scheduled_events,
                 "market_metrics": market_metrics,
                 "news_reaction_history": news_reaction_history,
@@ -445,7 +542,8 @@ def _to_llm_summary(data: Dict[str, Any]) -> str:
     news = data.get("news_events") or []
     top_news = [n for n in news if n.get("title")][:5]
     if top_news:
-        lines.append("- 최근 뉴스:")
+        # [2026-10-13] 태그는 '주제' 등급이다 — 실측 영향도 아님(IMPACT_LEVEL_BASIS)
+        lines.append("- 최근 뉴스 (태그 = 매크로 주제 키워드 등급, 실측 시장 영향도 아님):")
         for n in top_news:
             title = (n.get("title") or "")[:80]
             score = n.get("sentiment_score")
@@ -453,7 +551,7 @@ def _to_llm_summary(data: Dict[str, Any]) -> str:
             model = n.get("sentiment_model", "")
             impact = n.get("impact_level", "")
             risk_raw = n.get("risk_flags", "")
-            tag = f" [{impact}]" if impact else ""
+            tag = f" [주제:{impact}]" if impact else ""
             score_tag = ""
             if isinstance(score, (int, float)):
                 model_tag = f" [{model}]" if model and model != "keyword_fallback" else ""
@@ -559,12 +657,13 @@ def _load_causality_summary(market_id: str) -> Dict[str, Any]:
                 (market_id,),
             )
 
+            # [2026-09-18 Ticket A] avg_anticipation_ratio 는 선행 성과 주장 성분이라
+            # 집계에서 제외한다 (per-row raw 컬럼은 이 resource 의 본래 용도라 유지).
             type_distribution = {}
             for row in type_dist:
                 nt = row.get("news_type", "unknown")
                 type_distribution[nt] = {
                     "count": row.get("cnt", 0),
-                    "avg_anticipation_ratio": round(float(row.get("avg_ratio") or 0), 3),
                     "avg_precursor_score": round(float(row.get("avg_precursor") or 0), 3),
                 }
 
@@ -612,16 +711,23 @@ def _to_causality_llm_summary(data: Dict[str, Any]) -> str:
     type_dist = data.get("type_distribution", {})
     causality = data.get("causality", [])
 
-    lines = [f"[{market_id} 뉴스-시장 인과관계]"]
+    # [2026-09-18 Ticket A] "예견"/"선행비율" 표현 제거 — 라벨 타당성 감사 중.
+    lines = [
+        f"[{market_id} 뉴스 인과 라벨] UNVERIFIED — 라벨 산출 방법 감사 중. "
+        "선행·예측 능력의 근거로 사용할 수 없음."
+    ]
 
     # 타입 분포
     if type_dist:
-        lines.append("- 뉴스 타입 분포:")
+        lines.append("- 뉴스 라벨 분포:")
         for nt, info in type_dist.items():
             cnt = info.get("count", 0)
-            ratio = info.get("avg_anticipation_ratio", 0)
-            label = {"anticipated": "예견", "surprise": "서프라이즈", "surprise_with_precursor": "전조있는 서프라이즈"}.get(nt, nt)
-            lines.append(f"  * {label}: {cnt}건 (선행비율={ratio:.2f})")
+            label = {
+                "anticipated": "캘린더 매칭",
+                "surprise": "미매칭",
+                "surprise_with_precursor": "미매칭(전조 플래그)",
+            }.get(nt, nt)
+            lines.append(f"  * {label}: {cnt}건")
 
     # 최근 분석 (상위 5건)
     recent = [c for c in causality if c.get("news_title")][:5]
@@ -815,9 +921,10 @@ def _ai_summary_external(data: dict) -> str:
     news_list = data.get("news_events", [])
     headline = ""
     if news_list:
-        high_impact = [n for n in news_list if n.get("impact_level") == "high"]
-        if high_impact:
-            headline = f" 고영향: {high_impact[0].get('title', '')[:30]}."
+        # [2026-10-13] 종전 "고영향:" 은 사실이 아니었다 — impact_level=high 는 매크로 주제 키워드 일치다.
+        topical = [n for n in news_list if n.get("impact_level") == "high"]
+        if topical:
+            headline = f" 최신 매크로 주제 뉴스(키워드 등급, 영향도 아님): {topical[0].get('title', '')[:30]}."
     return f"{market_id} 외부: 뉴스 {news}건, 펀더멘탈 {fund}건, 예정이벤트 {events}건.{headline}"
 
 
@@ -850,12 +957,15 @@ def register_external_context_resources(mcp, cache):
 
     @mcp.resource("market://{market_id}/external/causality")
     async def get_causality_summary(market_id: str) -> Dict[str, Any]:
-        """[역할] 뉴스-시장 인과관계 분석(예상/서프라이즈/전조서프라이즈 3분류). [호출 시점] 뉴스의 시장 인과관계 분석 시. [선행 조건] external/summary 후. [후속 추천] market://derived/event-leading, market://derived/reaction-speed. [주의] 데이터 축적 필요. [출력 스키마] _contract 포함. market_id(str), total_analyses(int), type_distribution{news_type→{count,avg_anticipation_ratio,avg_precursor_score}}, causality[{news_type,anticipation_ratio,lead_time_minutes,precursor_score,confidence,title,published_at}], _llm_summary(str)."""
+        """[역할] 뉴스 인과 라벨 원시 행(캘린더 매칭/미매칭/전조 플래그) — UNVERIFIED. 라벨 산출 방법과 lead/anticipation 수치는 감사 중이며 선행·예측 능력의 근거가 아니다. [호출 시점] 뉴스 인과 분석의 raw 행 점검 시. [선행 조건] external/summary 후. [후속 추천] market://derived/event-leading, market://derived/reaction-speed. [주의] 데이터 축적 필요. type_distribution 의 avg_anticipation_ratio 는 비노출. [출력 스키마] _contract 포함. market_id(str), total_analyses(int), type_distribution{news_type→{count,avg_precursor_score}}, causality[{news_type,anticipation_ratio,lead_time_minutes,precursor_score,confidence,title,published_at}], _llm_summary(str). 최상위: verification_status(str), verification_note(str)."""
         cache_key = f"causality_summary_{market_id}"
         cached = cache.get(cache_key, ttl=CACHE_TTL_MARKET_STATUS)
         if cached:
             return to_resource_text(cached)
         data = await asyncio.to_thread(_load_causality_summary, market_id)
+        # [2026-09-18 Ticket A] per-row raw 는 유지하되 검증 상태를 명시.
+        from oneqaz_trading_mcp.verification import mark_unverified
+        data = mark_unverified(data)
         cache.set(cache_key, data)
         return to_resource_text(data)
 

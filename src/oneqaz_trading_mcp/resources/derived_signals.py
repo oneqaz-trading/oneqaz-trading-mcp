@@ -101,19 +101,33 @@ def _load_event_leading_scores() -> Dict[str, Any]:
                 ORDER BY leading_score DESC
             """)
 
+            # [2026-09-18 Ticket A] 이 resource 는 tool 과 같은 event_leading_scores
+            # 집계를 노출한다. 미검증 수치는 응답에서 제거 (DB 원본 무변경).
+            from oneqaz_trading_mcp.verification import (
+                NEWS_LEAD_DERIVED_METRIC_FIELDS,
+                strip_metric_fields,
+            )
+            as_of = scores[0]["computed_at"] if scores else None
+            group_count = len(scores)
+            scores = strip_metric_fields(scores, NEWS_LEAD_DERIVED_METRIC_FIELDS)
+
             summary = _build_leading_score_summary(scores)
-            result = {"scores": scores, "_llm_summary": summary}
+            result = {
+                "scores": scores,
+                "_llm_summary": summary,
+                "withheld_fields": list(NEWS_LEAD_DERIVED_METRIC_FIELDS),
+            }
 
             explanation = build_resource_explanation(
                 market="global",
                 entity_type="market",
                 explanation_type="mcp_event_leading_scores",
-                as_of_time=scores[0]["computed_at"] if scores else None,
-                headline="이벤트 선행 점수 스냅샷",
+                as_of_time=as_of,
+                headline="이벤트 그룹 커버리지 스냅샷 (UNVERIFIED)",
                 why_text=summary,
                 bullet_points=[
-                    f"분석 그룹={len(scores)}",
-                    f"최고 선행 점수={scores[0]['leading_score']:.2f}" if scores else "데이터 없음",
+                    f"분석 그룹={group_count}",
+                    "선행 점수·평균 선행시간은 계산 방법 감사 중이라 비노출",
                 ],
             )
             return with_explanation_contract(result, resource_type="event_leading_scores", explanation=explanation)
@@ -129,15 +143,18 @@ def _load_event_leading_scores() -> Dict[str, Any]:
 
 
 def _build_leading_score_summary(scores: List[Dict]) -> str:
+    # [2026-09-18 Ticket A] 선행 점수·선행시간·정확도 인용 제거.
+    # 계산 방법 감사 전까지 커버리지(그룹명 + 표본 수)만 서술한다.
     if not scores:
-        return "[이벤트 선행 점수] 데이터 없음"
-    lines = ["[이벤트 선행 점수]"]
+        return "[이벤트 그룹 커버리지] 데이터 없음"
+    lines = [
+        "[이벤트 그룹 커버리지] UNVERIFIED — 선행 지표 계산 방법 감사 중. "
+        "선행 능력의 근거로 사용할 수 없음."
+    ]
     for s in scores[:5]:
         lines.append(
-            f"- {s['event_type']}({s['news_type']}): "
-            f"선행={s['leading_score']:.2f}, "
-            f"평균선행시간={s.get('avg_lead_time_minutes', 0):.0f}분, "
-            f"정확도={s.get('accuracy_pct', 0) or 0:.0%}"
+            f"- {s.get('event_type')}({s.get('news_type')}): "
+            f"표본={s.get('sample_count', 0)}"
         )
     if len(scores) > 5:
         lines.append(f"  ... 외 {len(scores) - 5}건")
@@ -326,7 +343,8 @@ def _load_news_reaction_speed() -> Dict[str, Any]:
             bands = _fetch_all(conn, """
                 SELECT news_type, market_id, speed_band, count,
                        avg_reaction_score, avg_lag_minutes,
-                       absorption_time_minutes, direction_accuracy, computed_at
+                       absorption_time_minutes, computed_at
+                       -- [2026-09-22] direction_accuracy 제거: 동어반복(항상 1.0). 위 주석 참조.
                 FROM news_reaction_speed
                 ORDER BY news_type, speed_band
             """)
@@ -360,7 +378,14 @@ def _build_reaction_speed_summary(bands: List[Dict]) -> str:
         return "[뉴스 반응 속도] 데이터 없음"
     lines = ["[뉴스 반응 속도]"]
     for b in bands:
-        acc = f", 방향정확도={b['direction_accuracy']:.0%}" if b.get("direction_accuracy") else ""
+        # [2026-09-22] 🔴 `direction_accuracy` 노출 중단 — **동어반복이라 구조상 항상 100%** 였다.
+        #   생산자가 reaction_score 의 부호로 direction 라벨을 만드는데(news_signal_reaction.py:176)
+        #   그 둘을 대조해 "정확도" 라 불렀다. 실증: 라벨 3종 전건 일치(358,398건).
+        #   "방향정확도 100% (N=358,398)" 이 외부 AI 에 나가고 있었다 — 인용되면 회수 불가.
+        #   생산측은 이제 None 을 저장한다(`external_context/core/derived_signals.py`).
+        #   ⛔ 이 줄을 되살리지 말 것. 진짜 방향 정확도는 **사전 예측 축**이 있어야 잴 수 있고
+        #      이 테이블에는 그 축이 없다(별도 설계 사안).
+        acc = ""
         lines.append(
             f"- {b['news_type']}/{b['speed_band']}: "
             f"평균래그={b.get('avg_lag_minutes', 0) or 0:.0f}분, "
@@ -530,7 +555,8 @@ def _ai_summary_derived(data: dict) -> str:
     el = data.get("event_leading", {})
     if el and not el.get("error"):
         scores = el.get("scores", [])
-        parts.append(f"선행점수 {len(scores)}건")
+        # [2026-09-18 Ticket A] "선행점수" → 커버리지 서술.
+        parts.append(f"이벤트그룹 {len(scores)}건")
     rt = data.get("regime_transitions", {})
     if rt and not rt.get("error"):
         transitions = rt.get("transitions", [])
@@ -560,13 +586,16 @@ def register_derived_signals_resources(mcp, cache):
 
     @mcp.resource("market://derived/event-leading")
     async def get_event_leading_scores():
-        """[역할] 이벤트 선행 점수(시장의 이벤트 선반영 정도). [호출 시점] 이벤트 기반 매매 전략 수립 시. [선행 조건] external/causality 권장. [후속 추천] market://derived/reaction-speed. [주의] 데이터 축적 필요. [출력 스키마] ai_summary 래핑. full_data: scores[{event_type,market_id,news_type,leading_score,avg_lead_time_minutes,avg_anticipation_ratio,accuracy_pct,sample_count}], _contract{...}, _llm_summary(str)."""
+        """[역할] 뉴스 이벤트 그룹 커버리지 (UNVERIFIED — 선행 지표 계산 방법 감사 중, 선행·예측 능력의 근거 아님). [호출 시점] 뉴스 파이프라인 커버리지 점검 시. [선행 조건] external/causality 권장. [후속 추천] market://derived/reaction-speed. [주의] 데이터 축적 필요. leading_score/avg_lead_time_minutes/avg_anticipation_ratio/accuracy_pct 는 응답에서 제외됨. [출력 스키마] ai_summary 래핑. full_data: scores[{event_type,market_id,news_type,sample_count,computed_at}], withheld_fields[str], _contract{...}, _llm_summary(str). 최상위: verification_status(str), verification_note(str)."""
         cache_key = "derived_event_leading"
         cached = cache.get(cache_key, ttl=CACHE_TTL_MARKET_STATUS)
         if cached:
             return to_resource_text(cached)
         data = await asyncio.to_thread(_load_event_leading_scores)
         data = wrap_with_ai_summary(data, "event_leading_scores", _ai_summary_derived)
+        # [2026-09-18 Ticket A] tool 과 동일한 검증 상태 표식.
+        from oneqaz_trading_mcp.verification import mark_unverified
+        data = mark_unverified(data)
         cache.set(cache_key, data)
         return to_resource_text(data)
 
@@ -596,7 +625,7 @@ def register_derived_signals_resources(mcp, cache):
 
     @mcp.resource("market://derived/reaction-speed")
     async def get_news_reaction_speed():
-        """[역할] 뉴스 반응 속도(시장의 뉴스 반응 시간/정확도). [호출 시점] 뉴스 기반 매매 타이밍 최적화 시. [선행 조건] external/summary 권장. [후속 추천] market://derived/event-leading. [주의] news_reaction_speed 기반. [출력 스키마] ai_summary 래핑. full_data: speed_bands[{news_type,market_id,speed_band,count,avg_reaction_score,avg_lag_minutes,absorption_time_minutes,direction_accuracy}], _contract{...}, _llm_summary(str)."""
+        """[역할] 뉴스 반응 속도(시장의 뉴스 반응 시간/정확도). [호출 시점] 뉴스 기반 매매 타이밍 최적화 시. [선행 조건] external/summary 권장. [후속 추천] market://derived/event-leading. [주의] news_reaction_speed 기반. [출력 스키마] ai_summary 래핑. full_data: speed_bands[{news_type,market_id,speed_band,count,avg_reaction_score,avg_lag_minutes,absorption_time_minutes}] (direction_accuracy 는 2026-09-22 제거 — 동어반복이라 구조상 항상 1.0 이었다), _contract{...}, _llm_summary(str)."""
         cache_key = "derived_reaction_speed"
         cached = cache.get(cache_key, ttl=CACHE_TTL_MARKET_STATUS)
         if cached:
@@ -620,7 +649,7 @@ def register_derived_signals_resources(mcp, cache):
 
     @mcp.resource("market://{market_id}/derived/all")
     async def get_all_derived_signals(market_id: str):
-        """[역할] 5가지 파생 시그널을 한번에 반환. [호출 시점] 파생 시그널 전체 파악 시. 개별 5회 호출 대체. [선행 조건] market://{market_id}/status 권장. [후속 추천] 개별 Resource로 상세 drill-down. [주의] 순차 호출로 응답 느릴 수 있음. TTL=60초. [출력 스키마] ai_summary 래핑. full_data: market_id(str), event_leading_scores{scores[...]}, regime_transition_probs{current_regime,transitions[...]}, cross_market_decoupling{pairs[...],overall_decoupling}, news_reaction_speed{speed_bands[...]}, strategy_fitness{fitness[...]}, _contract{...}, _llm_summary(str)."""
+        """[역할] 5가지 파생 시그널을 한번에 반환. [호출 시점] 파생 시그널 전체 파악 시. 개별 5회 호출 대체. [선행 조건] market://{market_id}/status 권장. [후속 추천] 개별 Resource로 상세 drill-down. [주의] 순차 호출로 응답 느릴 수 있음. TTL=60초. event_leading_scores 블록은 UNVERIFIED (선행 지표 계산 방법 감사 중 — 선행·예측 능력의 근거 아님, 수치 필드 비노출). [출력 스키마] ai_summary 래핑. full_data: market_id(str), event_leading_scores{scores[{event_type,market_id,news_type,sample_count,computed_at}],withheld_fields[str]}, regime_transition_probs{current_regime,transitions[...]}, cross_market_decoupling{pairs[...],overall_decoupling}, news_reaction_speed{speed_bands[...]}, strategy_fitness{fitness[...]}, _contract{...}, _llm_summary(str). 최상위: verification_status(str), verification_note(str)."""
         cache_key = f"derived_all_{market_id}"
         cached = cache.get(cache_key, ttl=CACHE_TTL_MARKET_STATUS)
         if cached:
@@ -641,6 +670,9 @@ def register_derived_signals_resources(mcp, cache):
                 _llm_summary="파생 시그널 조회 타임아웃",
             )
         data = wrap_with_ai_summary(data, "derived_signals_all", _ai_summary_derived)
+        # [2026-09-18 Ticket A] event_leading_scores 블록을 품고 있으므로 동일 표식.
+        from oneqaz_trading_mcp.verification import mark_unverified
+        data = mark_unverified(data)
         cache.set(cache_key, data)
         return to_resource_text(data)
 

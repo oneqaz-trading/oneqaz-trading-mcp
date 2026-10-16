@@ -540,6 +540,22 @@ def _make_pool(schema: str, config: DBConfig):
                 conn.autocommit = False
         except Exception:
             pass
+        # [2026-09-13 세션 GUC 누출 차단] statement_timeout / lock_timeout 을 풀
+        # 설정값으로 복원. 배경: 다이얼 모듈(state_prior·state_cell_dial·
+        # ma_alignment_dial 5~10s, ledger_calibration 30s)이 세션 수준 SET 을 남긴
+        # 채 반납하고, 드레인(enhancement_outcome·path_ledger)은 "SET ... = DEFAULT"
+        # 로 role 기본(engine_rw 60s)으로 떨어뜨린 채 반납 → 다음 대여자가 짧은
+        # 한도를 상속. PG 로그 72h 실측(09-13): 5~7s 짜리 학습 집계(ah_bias·레짐
+        # 사이징·레짐 전환·연패)가 statement timeout 으로 1,140건, 68s 짜리 role v2
+        # 집계가 47건 취소 — 풀 한도(600s)였으면 전부 통과했을 쿼리. _configure 는
+        # 물리 conn 생성 시 1회만 돌므로 반납 시점이 유일한 복원 지점이다.
+        # 실패 시 재발생 → 풀이 conn 을 폐기 (GUC 상태 불명 conn 을 되돌리지 않음).
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SET statement_timeout = {config.pg_statement_timeout_ms}; "
+                "SET lock_timeout = DEFAULT"
+            )
+        conn.commit()
 
     # getconn 기본 timeout — caller 가 `pool.connection()` 을 timeout 인자 없이
     # 호출해도 무한 대기하지 않도록 풀 레벨에서 cap. 2026-05-12 intel/external_context

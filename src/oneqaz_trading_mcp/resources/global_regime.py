@@ -63,6 +63,9 @@ def _user_summary_regime(data: dict) -> str:
         "volatile": "변동성 확대",
         "unknown": "판단 보류",
         "neutral": "중립",
+        # [2026-10-14] 분석기 overall 의 실제 라벨(market/global_regime/analyzer.py::_overall_regime) — 종전엔 영문 그대로 나갔다.
+        "risk_on": "위험선호",
+        "risk_off": "위험회피",
     }.get(str(regime).lower(), str(regime))
     mtf = data.get("mtf_summary", {})
     aligned = mtf.get("aligned_count", 0)

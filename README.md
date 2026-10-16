@@ -129,41 +129,49 @@ Try one of:
 
 ### Option 2: Self-host (source transparency)
 
-This package is a **snapshot of the production server code as of 0.4.0
-(2026-08-23)**, synced from the OneQAZ monorepo by
-`scripts/sync_from_monorepo.py`. Releases 0.4.1–0.4.6 changed only the bundled
-`/privacy`, `/terms` and `/keys` pages, a removed password default and the
-docs. The hosted endpoint has changed since 0.4.0, so the package is **not**
-the exact code serving `api.oneqaz.com/mcp` today. Known differences:
+This package contains the server code that serves `api.oneqaz.com/mcp`,
+synced from the OneQAZ monorepo by `scripts/sync_from_monorepo.py` (0.5.0 =
+the hosted code as of 2026-10-17). The same 42 tools, 17 resources, 17
+templates and 4 prompts register, and a side-by-side run of the package and the
+hosted code against the same database gives the same outcome (success or error)
+for every tool and resource except `get_macro_influence_map`. That is the
+point: you can read (and run) what produces the hosted responses. What differs:
 
-- **Tools**: the package has 39 tools; the hosted endpoint has 42. The
-  entity-context tools (`get_symbol_context`, `get_group_context`,
-  `get_market_context`) and `get_account_status` are hosted-only for now.
-- **Hosted-only behavior**: OAuth account connection ("Connect free"),
-  rejection of unrecognized API keys with HTTP 401, and the FastMCP 4 runtime
-  (this package pins FastMCP 2.x).
-- **Later fixes**: most server modules have changed on the hosted side since
-  2026-08-23; those changes are not in this package yet.
-
-A resync is being prepared. Until it ships, read this package as a reference
-for how the hosted responses are produced, not as a byte-for-byte copy.
+- **Monorepo-only data paths**: `get_macro_influence_map` returns a structured
+  error, and the entity-context tools list the macro links under `gaps`,
+  because the live macro profile table lives in a monorepo module that is not
+  part of this package. Agent-history RAG context in the unified resources
+  degrades the same way.
+- **API keys**: the hosted key store is not included. By default every caller
+  is served as free; set `MCP_TIER_RESOLVER` to validate keys yourself (see
+  [Self-hosting with API keys](#self-hosting-with-api-keys)).
+- **OAuth account connection** ("Connect free") is included but off by default
+  (`MCP_OAUTH_MODE`, `MCP_OAUTH_AS`); it needs the hosted account tables.
+- **Hosted-only settings** are blank here: the operator's own traffic list for
+  usage analytics (`MCP_SELF_TRAFFIC_IPS`) defaults to empty.
 
 ```bash
 pip install oneqaz-trading-mcp
 # point it at a OneQAZ-compatible PostgreSQL (TimescaleDB) instance:
-export DB_BACKEND=postgres PG_HOST=... PG_PORT=5432 PG_DB=auto_trader PG_USER=... PG_PASSWORD=...
+export PG_HOST=... PG_PORT=5432 PG_DB=auto_trader PG_USER=... PG_PASSWORD=...
 oneqaz-trading-mcp serve   # starts at http://localhost:8010
 ```
 
 - MCP endpoint: `http://localhost:8010/mcp`
+- Tested with FastMCP 2.14.7, 4.0.11 and 4.1.0 (FastMCP 3.x is excluded as
+  untested) on Python 3.11 and 3.13.
 - The server is PostgreSQL-only (the prior SQLite demo backend was retired in
   0.4.0 — `oneqaz-trading-mcp init` now just prints a deprecation notice).
-  Without OneQAZ's live database the tools return structured, actionable
-  errors rather than data — for evaluation, use the
+  Without a reachable OneQAZ-compatible database the server still starts and
+  `/health` reports `degraded`, but each call first waits out the connection
+  timeouts (about a minute per schema) and then returns errors or empty
+  results — for evaluation, use the
   [Live API](#option-1-live-api--no-install-needed).
-- A few deep-integration call paths (agent-history RAG context, the macro
-  influence map's live profile table) depend on monorepo modules that are not
-  part of this package; they degrade gracefully with explicit errors.
+- **Exposing it beyond localhost**: requests from `127.0.0.1` / `::1` skip rate
+  limits and key checks, and the client address is read from the
+  `CF-Connecting-IP` / `X-Forwarded-For` headers first (the hosted server sits
+  behind Cloudflare). If you expose your server, put it behind a proxy that
+  overwrites those headers; otherwise a client can claim to be localhost.
 
 Then connect from any MCP client:
 
@@ -199,7 +207,7 @@ If you run the server locally and want to authenticate `pro` callers (higher quo
 MCP_TIER_RESOLVER=myauth.keystore:resolve_tier oneqaz-trading-mcp serve
 ```
 
-The function receives the raw API key string and must return `"free"`, `"pro"`, or `"internal"`. Default behavior (no resolver): every caller is `free`.
+The function receives the raw API key string and returns `"free"`, `"pro"` or `"internal"`, `None` to serve the caller as free, or `"invalid"` to reject the key with HTTP 401 (as the hosted server does for unknown keys). If the resolver cannot be imported or raises, the error is logged and the caller is served as free. Default behavior (no resolver): every caller is `free`.
 
 ## Why everything is free
 
@@ -275,9 +283,9 @@ Result: a typical session goes from 7+ generic calls (AI guessing what's next) t
 
 ## Tools (42 on the hosted endpoint — all free tier)
 
-Plus `get_account_status` (plan and remaining quota of a connected OneQAZ account). The self-host package currently has 39 of the 42 — see [Option 2](#option-2-self-host-source-transparency).
+Plus `get_account_status` (plan and remaining quota of a connected OneQAZ account; registered only when OAuth account connection is on). The self-host package registers the same 42 — see [Option 2](#option-2-self-host-source-transparency).
 
-### Entity context (3 tools) — hosted, new in 2026-10
+### Entity context (3 tools) — new in 0.5.0
 
 One call answers "what is going on with X?" for a stock or coin, a sector / ETF basket, or a whole market. Each response leads with self-contained headline claims, then the entity's observed state, what moves before it (lead-lag links, macro and structure groups), what follows it, tagged news, and **gaps** — what OneQAZ does not track for it.
 
@@ -476,7 +484,11 @@ All configuration is via environment variables:
 | `MCP_SERVER_HOST` | `0.0.0.0` | Bind host |
 | `MCP_LOG_LEVEL` | `INFO` | Log level |
 | `MCP_TIER_RESOLVER` | _unset_ | `module:function` returning tier for an API key (self-host hook) |
-| `DB_BACKEND` | `postgres` | Must be `postgres` (SQLite backend retired in 0.4.0) |
+| `MCP_TRUSTED_IP_PREFIXES` | _unset_ | Comma-separated address prefixes treated like localhost (no rate limit) |
+| `MCP_SELF_TRAFFIC_IPS` | _unset_ | Comma-separated addresses excluded from usage analytics (your own monitors) |
+| `MCP_LEDGER_THREAD_DISABLED` | `0` | `1` stops the hourly prediction-ledger hash writer (use on a second instance) |
+| `MCP_OAUTH_MODE` / `MCP_OAUTH_AS` | `off` | OAuth account connection; needs the hosted account tables |
+| `DB_BACKEND` | `postgres` | Must be `postgres` (SQLite backend retired in 0.4.0); `serve` sets it if unset |
 | `PG_HOST` / `PG_PORT` | `postgres` / `5432` | PostgreSQL host / port |
 | `PG_DB` / `PG_USER` / `PG_PASSWORD` | `auto_trader` / … | PostgreSQL database / credentials (a read-only role is enough) |
 | `PG_POOL_MIN` / `PG_POOL_MAX` | `0` / `50` | Per-schema connection pool bounds |

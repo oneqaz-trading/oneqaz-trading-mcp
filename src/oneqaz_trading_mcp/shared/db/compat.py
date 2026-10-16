@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import re
+from contextlib import contextmanager
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
@@ -119,15 +120,23 @@ def convert_qmark_to_pyformat(sql: str) -> str:
     return _QMARK_OUTSIDE_QUOTES.sub(_replace, sql)
 
 
+# 테이블 참조 — 선택적 스키마 접두 허용 (`t` / `market_us.t`).
+# [2026-09-22] 종전 패턴은 무접두 식별자만 받았고, 매치 실패 시 convert_* 가 **원문을
+#   조용히 반환**하는 구조라 `INSERT OR REPLACE INTO {schema}.t` 는 SQLite 원문 그대로
+#   PG 로 날아가 `syntax error at or near "OR"` 로 죽었다 (09-20 커밋 77981af 가 접두를
+#   붙인 analysis_combination_weights 가 3시장 전부 실패, 09-21 11:43 엔진 재기동부터).
+#   접두 명시는 search_path 누수 방어로 권장되는 쪽이므로 shim 이 그 표기를 받아야 한다.
+_TABLE_REF = r"(?:[A-Za-z_][A-Za-z_0-9]*\s*\.\s*)?[A-Za-z_][A-Za-z_0-9]*"
+
 # INSERT OR REPLACE → PG upsert 변환 (단순 케이스)
 _INSERT_OR_REPLACE_RE = re.compile(
-    r"^\s*INSERT\s+OR\s+REPLACE\s+INTO\s+([A-Za-z_][A-Za-z_0-9]*)\s*\(([^)]+)\)",
+    r"^\s*INSERT\s+OR\s+REPLACE\s+INTO\s+(" + _TABLE_REF + r")\s*\(([^)]+)\)",
     re.IGNORECASE,
 )
 
 # INSERT OR IGNORE → INSERT ... ON CONFLICT DO NOTHING (단순 케이스)
 _INSERT_OR_IGNORE_RE = re.compile(
-    r"^\s*INSERT\s+OR\s+IGNORE\s+INTO\s+([A-Za-z_][A-Za-z_0-9]*)",
+    r"^\s*INSERT\s+OR\s+IGNORE\s+INTO\s+(" + _TABLE_REF + r")",
     re.IGNORECASE,
 )
 
@@ -481,14 +490,17 @@ def convert_insert_or_replace(sql: str, pk_resolver=None) -> str:
     m = _INSERT_OR_REPLACE_RE.match(sql)
     if not m:
         return sql
-    table = m.group(1).lower()
+    # [2026-09-22] 스키마 수식자 분리. _UPSERT_CONFLICT_KEYS 키는 무접두라 매핑 조회는
+    # bare 로, PK 동적조회는 수식자 포함으로 넘긴다 (to_regclass 가 스키마를 받는다).
+    qualified = re.sub(r"\s+", "", m.group(1)).lower()
+    table = qualified.rsplit(".", 1)[-1]
     columns_str = m.group(2)
     columns = [c.strip() for c in columns_str.split(",")]
 
     conflict_cols = _UPSERT_CONFLICT_KEYS.get(table)
     if not conflict_cols and pk_resolver is not None:
         try:
-            resolved = pk_resolver(table)
+            resolved = pk_resolver(qualified)
         except Exception:
             resolved = None
         if resolved:
@@ -507,7 +519,7 @@ def convert_insert_or_replace(sql: str, pk_resolver=None) -> str:
 
     if not conflict_cols:
         # 매핑도 PK 도 없음 → 안전을 위해 ON CONFLICT DO NOTHING (경고 1회).
-        _warn_do_nothing_once(table)
+        _warn_do_nothing_once(qualified)
         return new_sql.rstrip().rstrip(";") + " ON CONFLICT DO NOTHING"
 
     # 업데이트 대상: 충돌 컬럼을 제외한 나머지
@@ -1070,8 +1082,70 @@ class PgConnectionShim:
     def cursor(self) -> PgCursorShim:
         return PgCursorShim(self._conn.cursor())
 
+    # ── 트랜잭션 상태 가드 ────────────────────────────────────────
+    # [2026-09-20] abort(INERROR) 된 트랜잭션에 COMMIT 을 보내면 PG 는 조용히
+    # ROLLBACK 으로 처리하고 **에러도 내지 않는다**. retention 이 2주 넘게
+    # "160만행 정리" 를 INFO 로 찍으면서 실제로는 한 행도 지우지 못한 사고의
+    # 직접 원인 (agent_history 는 _DISPOSABLE 컬럼명 오타로 tx 가 abort 된 상태
+    # 였고, 마지막 commit() 이 그 전 삭제를 전부 되돌렸다).
+    #   - commit()        : 탐지기. abort 상태면 ERROR 로 남기되 동작은 유지.
+    #   - commit_strict() : 조용한 롤백이 치명적인 경로(삭제/집계)용. 예외.
+
+    @property
+    def in_failed_transaction(self) -> bool:
+        """트랜잭션이 abort(INERROR) 상태인가."""
+        try:
+            from psycopg import pq
+
+            return self._conn.info.transaction_status == pq.TransactionStatus.INERROR
+        except Exception:
+            # 상태 조회 자체가 실패하면 판단 불가 — 가드를 발동시키지 않는다.
+            return False
+
     def commit(self) -> None:
+        if self.in_failed_transaction:
+            logger.error(
+                "commit() on aborted transaction — PG 는 이를 ROLLBACK 으로 처리한다. "
+                "직전 변경은 전부 폐기된다 (borrowed at: %s)",
+                getattr(self, "_borrow_origin", "unknown"),
+                stack_info=True,
+            )
         self._conn.commit()
+
+    def commit_strict(self) -> None:
+        """abort 상태면 fail-loud. 삭제/집계 경로 전용."""
+        if self.in_failed_transaction:
+            raise RuntimeError(
+                "commit_strict(): 트랜잭션이 abort 상태다. COMMIT 을 보내면 PG 가 "
+                "ROLLBACK 으로 처리해 직전 변경이 조용히 사라진다. "
+                f"(borrowed at: {getattr(self, '_borrow_origin', 'unknown')})"
+            )
+        self._conn.commit()
+
+    @contextmanager
+    def savepoint(self, name: str = "sp"):
+        """SAVEPOINT 로 문장 단위 격리.
+
+        블록 안에서 예외가 나도 ``ROLLBACK TO SAVEPOINT`` 로 트랜잭션을 살려
+        보내므로, 한 테이블의 실패가 뒤따르는 모든 문장을
+        ``current transaction is aborted`` 로 죽이지 않는다. 예외는 그대로
+        전파되니 caller 가 로깅/집계를 책임진다.
+        """
+        safe = re.sub(r"[^A-Za-z0-9_]", "_", name)[:48] or "sp"
+        self._conn.execute(f"SAVEPOINT {safe}")
+        try:
+            yield
+        except Exception:
+            try:
+                self._conn.execute(f"ROLLBACK TO SAVEPOINT {safe}")
+            except Exception:
+                logger.exception("ROLLBACK TO SAVEPOINT %s 실패", safe)
+            raise
+        else:
+            try:
+                self._conn.execute(f"RELEASE SAVEPOINT {safe}")
+            except Exception:
+                logger.exception("RELEASE SAVEPOINT %s 실패", safe)
 
     def rollback(self) -> None:
         self._conn.rollback()

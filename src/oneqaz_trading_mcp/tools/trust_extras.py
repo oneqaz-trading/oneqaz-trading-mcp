@@ -36,19 +36,26 @@ _FEE_RT_PCT = {
 
 _CACHE: Dict[str, Dict[str, Any]] = {}
 _TTL_SEC = int(os.getenv("TRUST_EXTRAS_TTL_SEC", "900"))
+# 실패 결과 캐시는 짧게 — 아래 _cached 주석 참조 (2026-09-21).
+_TTL_FAIL_SEC = int(os.getenv("TRUST_EXTRAS_TTL_FAIL_SEC", "60"))
 
 
 def _cached(key: str, builder) -> Dict[str, Any]:
     now = time.time()
     ent = _CACHE.get(key)
-    if ent and now - ent["ts"] < _TTL_SEC:
+    # [2026-09-21] 성공과 실패의 TTL 을 분리. 종전엔 둘 다 900초라 **1회 실패가
+    # 15분 배지 소등**으로 증폭됐다 (타임아웃 1건 -> 그 뒤 15분간 모든 호출자가
+    # `available: false` 를 받는다). 실패는 재시도가 싸므로 짧게 잡는다.
+    if ent and now - ent["ts"] < ent.get("ttl", _TTL_SEC):
         return ent["data"]
     try:
         data = builder()
+        _ttl = _TTL_SEC
     except Exception as exc:  # fail-open — 본 응답을 침해하지 않는다
         logger.warning("trust_extras %s build failed: %s", key, exc)
         data = {"available": False, "error": str(exc)[:120]}
-    _CACHE[key] = {"ts": now, "data": data}
+        _ttl = _TTL_FAIL_SEC
+    _CACHE[key] = {"ts": now, "data": data, "ttl": _ttl}
     return data
 
 
@@ -182,6 +189,24 @@ _KNOWN_BIASES = {
             ),
             "mitigation": "edge/anti cells are persistence-skill judged since 2026-07-20.",
         },
+        {
+            "id": "macro_persistence_null_relabel",
+            "found": "2026-10-07",
+            "status": "corrected (accuracy_ext live-ledger null; effective after engine batch restart — see get_prediction_accuracy meta.persistence_method)",
+            "what": (
+                "On 2026-10-01 the full candle history was relabeled (legacy -> PKL regime "
+                "labels). The persistence null was reconstructed from the relabeled history while "
+                "outcomes keep the labels recorded at the time, so the two matched only 1-7% of "
+                "the time; persistence collapsed to 0.12-0.35 and 8 cells were shown as 'edge'. "
+                "With a consistent null (the validator's own live record at creation) only 1 "
+                "cell clears persistence and 19 forecast cells are significantly worse than it. "
+                "The same relabel silently re-activated 3 coin cells that had been deprecated."
+            ),
+            "mitigation": (
+                "persistence null now comes from the live-recorded outcome stream (label-version "
+                "consistent); deprecation is judged on the post-relabel cohort only."
+            ),
+        },
     ],
 }
 
@@ -196,14 +221,37 @@ def _build_ledger_health() -> Dict[str, Any]:
         entry: Dict[str, Any] = {}
         conn = _open(schema)
         try:
-            row = conn.execute(
-                "SELECT ROUND((EXTRACT(EPOCH FROM NOW()) - MAX(timestamp)) / 3600.0) AS h30, "
-                "       ROUND((EXTRACT(EPOCH FROM NOW()) - MAX(timestamp) "
-                "              FILTER (WHERE is_correct_24h IN (0,1))) / 3600.0) AS h24 "
+            # [2026-09-21] 두 MAX 를 **별도 문으로 분리**. (보존 30일 -> 365일 감사 후속)
+            #   종전 단일 문은 두 번째 MAX 에 집계 `FILTER` 가 붙어 있어 PG 의
+            #   MAX -> 인덱스 역방향 스캔(InitPlan+Limit 1) 최적화가 통째로 무력화됐다.
+            #   분리 실험으로 인과 확정: 첫 MAX 단독 = `Index Scan Backward` cost 0.54,
+            #   FILTER 를 더하는 순간 `Parallel Seq Scan` **cost 242,866**.
+            #   실측(market_coin): 941ms(최대 3,110ms) / 호출당 블록 175,466 = 원장 전수.
+            #   시간 하한이 없어 **테이블 크기에 정비례**하므로 12배면 11~17초
+            #   (콜드 37~67초)로 풀 statement_timeout 30s 에 닿는다. 그리고 실패하면
+            #   `_cached` 가 `{"available": false}` 를 **900초** 캐시해 1회 실패가
+            #   **15분 배지 소등**으로 증폭된다. 외부 노출 경로다(30일 8,199콜 / 926 IP).
+            #
+            #   분리 후 각 문은 InitPlan + Limit 1 이라 스캔 깊이가 "마지막 판정까지의
+            #   거리" 에만 의존하고 **테이블 크기와 완전 무관**해진다.
+            #   실측 cost 242,865.95 -> **0.57**, 2,091ms -> 203ms, 출력값 동일.
+            #   ⚠️ ROUND/EXTRACT 산술은 **SQL 에 그대로 둔다** — Python `round()` 로 옮기면
+            #      PG(사사오입)와 Python(은행가 반올림)의 경계값 처리가 달라진다.
+            #   ⚠️ h24 쪽에 `is_correct IN (0,1)` 를 반드시 함께 남겨야 값이 같다.
+            #   두 문이 한 스냅샷이 아니지만 "몇 시간 전" 배지라 무의미한 차이다.
+            row30 = conn.execute(
+                "SELECT ROUND((EXTRACT(EPOCH FROM NOW()) - MAX(timestamp)) / 3600.0) AS h30 "
                 "FROM signal_predictions WHERE verified = 1 AND is_correct IN (0,1)"
             ).fetchone()
-            entry["hours_since_last_30m_judgment"] = float(row["h30"]) if row["h30"] is not None else None
-            entry["hours_since_last_24h_judgment"] = float(row["h24"]) if row["h24"] is not None else None
+            row24 = conn.execute(
+                "SELECT ROUND((EXTRACT(EPOCH FROM NOW()) - MAX(timestamp)) / 3600.0) AS h24 "
+                "FROM signal_predictions WHERE verified = 1 AND is_correct IN (0,1) "
+                "  AND is_correct_24h IN (0,1)"
+            ).fetchone()
+            entry["hours_since_last_30m_judgment"] = (
+                float(row30["h30"]) if row30 is not None and row30["h30"] is not None else None)
+            entry["hours_since_last_24h_judgment"] = (
+                float(row24["h24"]) if row24 is not None and row24["h24"] is not None else None)
             # 판정 기준 = "자격 있는 미판정 백로그" (휴장/연휴 캘린더 갭에 오탐 없음 —
             # hours-since 기준은 광복절 3연휴에서 kr 을 오탐했다, 2026-08-18 스모크 실측).
             # eligible = 시그널이 24h+2h 를 지나 판정 자격이 생겼는데 NULL 인 행.

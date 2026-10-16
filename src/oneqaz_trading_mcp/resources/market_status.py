@@ -4,11 +4,12 @@
 ==================
 코인/한국주식/미국주식 시장의 현재 상태 제공
 
-데이터 소스:
-- trading_system.db: 가상매매 시스템 상태
-  - virtual_positions: 현재 포지션
-  - virtual_performance_stats: 성과 통계
-  - system_status: 시장 레짐, 스캔 상태
+데이터 소스 (PG market_{m} 스키마 — 구 trading_system.db 논리 키):
+- virtual_positions: 현재 포지션
+- virtual_performance_stats: 성과 통계
+- system_status: 레짐 · 스캔 상태 (⚠️ 2026-10-05 실측 3시장 0행 — writer 호출자 0)
+- ⚠️ 레짐 · 성과 원천(system_status, virtual_performance_stats)이 비면 값을 지어내지 않고
+  `market_regime_status` / `performance.unavailable` 로 명시한다 (반대편 스틸맨 C2).
 """
 
 from __future__ import annotations
@@ -40,18 +41,28 @@ logger = logging.getLogger("MarketMCP")
 # AI Summary
 # ---------------------------------------------------------------------------
 
+def _block_missing(block: Any) -> bool:
+    """[2026-10-05 D12] 로더의 실패 표식은 {"unavailable": True} 인데 요약부는 "error" 만
+    검사해서, 실패 블록이 0 값으로 사실처럼 출력됐다 (백로그 fix_now-14). 둘 다 본다."""
+    return not isinstance(block, dict) or not block or bool(block.get("error")) or bool(block.get("unavailable"))
+
+
 def _ai_summary_status(data: dict) -> str:
     regime = data.get("market_regime", "unknown")
     pos = data.get("positions_summary", {})
-    total = pos.get("total", 0)
-    profitable = pos.get("profitable", 0)
-    avg_pnl = pos.get("avg_pnl", 0)
+    if _block_missing(pos):
+        pos_txt = "포지션 N/A"
+    else:
+        pos_txt = (f"포지션 {pos.get('total', 0)}개(이익 {pos.get('profitable', 0)}개, "
+                   f"avg {pos.get('avg_pnl', 0):.1f}%)")
     perf = data.get("performance", {})
-    win_rate = perf.get("win_rate", 0)
+    win_rate = perf.get("win_rate") if not _block_missing(perf) else None
+    # [2026-10-05] 값이 없으면 0.0% 로 지어내지 않는다.
+    win_rate_txt = f"{win_rate:.1f}%" if isinstance(win_rate, (int, float)) else "N/A"
     r24 = data.get("recent_24h", {})
-    trades_24h = r24.get("trades", 0)
+    trades_txt = "N/A" if _block_missing(r24) else f"{r24.get('trades', 0)}건"
     market_id = data.get("market_id", "")
-    return f"{market_id} 시장: 레짐={regime}, 포지션 {total}개(이익 {profitable}개, avg {avg_pnl:.1f}%), 승률 {win_rate:.1f}%, 24h {trades_24h}건."
+    return f"{market_id} 시장: 레짐={regime}, {pos_txt}, 승률 {win_rate_txt}, 24h {trades_txt}."
 
 
 def _user_summary_status(data: dict) -> str:
@@ -106,6 +117,20 @@ def _load_market_status(market_id: str) -> Dict[str, Any]:
                 result["system_status"] = {"unavailable": True, "reason": "데이터 수집 중"}
                 result["market_regime"] = "Unknown"
                 result["thinking_log"] = ""
+
+            # 1-0. [2026-10-05 스틸맨 C2] 레짐 원천이 비면 지어내지 않고 이유를 명시한다.
+            #   한때 external_context.market_regime_flow 의 1d 다수결 라벨로 채웠으나, 그것은
+            #   엔진이 쓰는 레짐(coin BTC 앵커 / kr·us 최근 30분 평균 stage — trade/core/trading.py)
+            #   과 다른 개념이었고, 함께 실은 regime_trend 는 인터벌 혼합 인공물이었다.
+            if result.get("market_regime") in (None, "", "Unknown"):
+                result["market_regime"] = "Unknown"
+                result["market_regime_status"] = {
+                    "available": False,
+                    "reason": (
+                        "system_status has no rows (its writer has no callers); the engine's "
+                        "own regime is not exposed by this resource."
+                    ),
+                }
 
             # 1-1. thinking_log가 없으면 system_logs에서 최신 1건 조회
             if not result.get("thinking_log"):
@@ -165,6 +190,19 @@ def _load_market_status(market_id: str) -> Dict[str, Any]:
                         "total_profit_pct": round(row["total_profit_pct"] or 0, 2),
                         "active_positions": row["active_positions"],
                     }
+                else:
+                    # [2026-10-05 D12 · 스틸맨 C2] virtual_performance_stats 가 3시장 0행이다
+                    # (writer save_performance_stats 의 호출자 0). 종전엔 performance 키가 없어
+                    # 요약이 기본값으로 "승률 0.0%" 를 사실처럼 냈다. 원장 파생을 한때 시도했으나
+                    # 진입 행(exit_timestamp=0)까지 손실로 세어 승률을 절반으로 냈다 → 백로그 D12
+                    # 원처방대로 '없음' 을 명시한다. 청산 기준 통계는 전용 tool 이 창을 명시해 계산한다.
+                    result["performance"] = {
+                        "unavailable": True,
+                        "reason": (
+                            "virtual_performance_stats has no rows (its writer has no callers); "
+                            "use analyze_trades / get_trade_history for closed-trade statistics."
+                        ),
+                    }
             except Exception as e:
                 logger.warning("performance load failed for %s: %s", market_id, e)
                 result["performance"] = {"unavailable": True, "reason": "데이터 수집 중"}
@@ -201,10 +239,11 @@ def _load_market_status(market_id: str) -> Dict[str, Any]:
                 as_of_time=result["timestamp"],
                 headline=f"{market_id} market status snapshot",
                 why_text=result["_llm_summary"],
+                # [2026-10-05 D12] 값이 없을 때 0 을 기본값으로 박지 않는다 (None 그대로).
                 bullet_points=[
                     f"market_regime={result.get('market_regime', 'Unknown')}",
-                    f"positions={result.get('positions_summary', {}).get('total', 0)}",
-                    f"win_rate={result.get('performance', {}).get('win_rate', 0)}",
+                    f"positions={result.get('positions_summary', {}).get('total')}",
+                    f"win_rate={result.get('performance', {}).get('win_rate')}",
                 ],
                 market_context_refs={
                     "market_regime": result.get("market_regime", "Unknown"),
@@ -236,9 +275,12 @@ def _generate_market_status_text(market_id: str, data: Dict[str, Any]) -> str:
         regime = data.get("market_regime", "Unknown")
         lines.append(f"- 시장 레짐: {regime}")
 
+        # [2026-10-05 D12] 실패 블록({"unavailable": True})은 0 이 아니라 N/A 로 적는다.
         # 포지션 요약
         pos = data.get("positions_summary", {})
-        if not pos.get("error"):
+        if _block_missing(pos):
+            lines.append("- 보유 포지션: N/A (데이터 수집 중)")
+        else:
             total = pos.get("total", 0)
             profitable = pos.get("profitable", 0)
             avg_pnl = pos.get("avg_pnl", 0)
@@ -246,14 +288,21 @@ def _generate_market_status_text(market_id: str, data: Dict[str, Any]) -> str:
 
         # 성과
         perf = data.get("performance", {})
-        if not perf.get("error"):
-            win_rate = perf.get("win_rate", 0)
-            total_pnl = perf.get("total_profit_pct", 0)
-            lines.append(f"- 전체 성과: 승률 {win_rate:.1f}%, 총 수익률 {total_pnl:+.2f}%")
+        if _block_missing(perf):
+            lines.append("- 전체 성과: N/A (데이터 수집 중)")
+        else:
+            win_rate = perf.get("win_rate")
+            total_pnl = perf.get("total_profit_pct")
+            # [2026-10-05] 값이 없으면 0 으로 지어내지 않는다.
+            wr_txt = f"{win_rate:.1f}%" if isinstance(win_rate, (int, float)) else "N/A"
+            tp_txt = f"{total_pnl:+.2f}%" if isinstance(total_pnl, (int, float)) else "N/A"
+            lines.append(f"- 전체 성과: 승률 {wr_txt}, 총 수익률 {tp_txt}")
 
         # 24시간
         recent = data.get("recent_24h", {})
-        if not recent.get("error"):
+        if _block_missing(recent):
+            lines.append("- 최근 24시간: N/A (데이터 수집 중)")
+        else:
             trades = recent.get("trades", 0)
             wins = recent.get("wins", 0)
             lines.append(f"- 최근 24시간: {trades}건 거래, {wins}건 성공")

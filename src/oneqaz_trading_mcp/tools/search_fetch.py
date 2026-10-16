@@ -39,11 +39,23 @@ import json
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
+
+from pydantic import Field
 
 from oneqaz_trading_mcp.resources.resource_response import DISCLAIMER_TEXT, to_resource_text
 
 logger = logging.getLogger("MarketMCP")
+
+# [2026-09-23 P0-B] pinned outputSchema — FastMCP 가 반환 annotation 을
+# introspect 해 outputSchema 를 만든다. pydantic 부재 시 Dict 로 격하.
+try:
+    from oneqaz_trading_mcp.schemas import FetchResult, SearchResult
+except ImportError:  # pragma: no cover
+    FetchResult = Dict[str, Any]  # type: ignore[assignment,misc]
+    SearchResult = Dict[str, Any]  # type: ignore[assignment,misc]
+
+
 
 _BASE_URL = "https://api.oneqaz.com/mcp"
 _CORPUS_TTL_SEC = 600  # 코퍼스 인메모리 캐시 10분
@@ -74,6 +86,27 @@ _QUERY_ALIASES = {
     "bitcoin": "btc", "비트코인": "btc",
     "ethereum": "eth", "이더리움": "eth",
 }
+
+# [2026-10-07 SRCH-001] 시장 의도 키워드 — "S&P 500 어때?" 에 코인 자료가 나가던 것 차단.
+# 소문자 부분일치. 종목 해석(티커·종목명)과 별개로, 질문이 가리키는 시장의 자료를 올린다.
+_MARKET_INTENT_KEYWORDS = {
+    "us_stock": ("s&p", "sp500", "spx", "nasdaq", "나스닥", "dow jones", "다우", "nyse",
+                 "russell", "wall street", "미국", "미장", "us stock", "us market", "u.s."),
+    "kr_stock": ("kospi", "코스피", "kosdaq", "코스닥", "krx", "한국", "국장", "korean", "korea"),
+    "crypto": ("crypto", "코인", "암호화폐", "가상화폐", "가상자산", "altcoin", "알트"),
+}
+_MARKET_TITLE = {"crypto": "Crypto", "kr_stock": "Korean stocks", "us_stock": "US stocks"}
+# 시장별로 fetch 가 실데이터를 여는 리소스 — 의도 매칭 시 이 순서로 올린다.
+_MARKET_INTENT_RESOURCES = (
+    ("structure", "market structure — sector / ETF / index groups, breadth, concentration"),
+    ("unified", "unified market context — regime, alerts, cross-market patterns"),
+)
+
+_COVERAGE_NOTE = (
+    "OneQAZ covers crypto (base tickers, e.g. BTC), Korean stocks (6-digit KRX codes, e.g. "
+    "005930 or names like 삼성전자) and US stocks (e.g. NVDA). Index/ETF baskets such as SPY "
+    "are covered at the market-structure level, not as per-symbol signals."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -117,9 +150,12 @@ async def _build_corpus(mcp_server: Any) -> List[Dict[str, Any]]:
                         "name": name,
                         "purpose": t.get("purpose") or "",
                     })
+            # [2026-10-07 SRCH-001] fetch 가 실데이터를 열 수 있는 resource 만 코퍼스에 싣는다.
+            # 종전엔 미커버 resource 도 결과로 나가 fetch 가 "not covered by the fetch resolver"
+            # 안내문을 **성공 응답**으로 돌려줬다 — ChatGPT 커넥터·Deep Research 경로의 막다른 길.
             for res in catalog.get("static_resources") or []:
                 uri = res.get("uri") or ""
-                if not uri:
+                if not uri or not _is_resolvable(uri):
                     continue
                 entries.append({
                     "id": f"resource:{uri}",
@@ -127,13 +163,14 @@ async def _build_corpus(mcp_server: Any) -> List[Dict[str, Any]]:
                     "url": f"{_BASE_URL}#resource:{uri}",
                     "name": uri,
                     "purpose": res.get("purpose") or "",
+                    "market": _uri_market(uri),
                 })
             for tpl in catalog.get("template_resources") or []:
                 # 템플릿은 fetch 가능한 concrete example uri 를 id 로 노출
                 # (render_example 기본값: market_id=crypto, symbol=BTC 등)
                 example = tpl.get("example") or ""
                 uri_tpl = tpl.get("uri") or ""
-                if not example or "<value>" in example:
+                if not example or "<value>" in example or not _is_resolvable(example):
                     continue
                 entries.append({
                     "id": f"resource:{example}",
@@ -141,10 +178,28 @@ async def _build_corpus(mcp_server: Any) -> List[Dict[str, Any]]:
                     "url": f"{_BASE_URL}#resource:{example}",
                     "name": f"{uri_tpl} {example}",
                     "purpose": tpl.get("purpose") or "",
+                    "market": _uri_market(example),
                 })
         except Exception as e:
             # 카탈로그 실패해도 signals 코퍼스는 서빙 (graceful degrade)
             logger.warning("search corpus: catalog introspection failed: %s", e)
+
+    # 1-b) 시장별 핵심 resource — 템플릿 example 은 crypto 만 내므로 kr/us 판을 명시 추가
+    #      (시장 의도 질의가 그 시장 자료로 가도록. resolver 커버 대상만)
+    have = {e["id"] for e in entries}
+    for market in _SIGNAL_MARKETS:
+        for kind, desc in _MARKET_INTENT_RESOURCES:
+            uri = f"market://{market}/{kind}"
+            if f"resource:{uri}" in have or not _is_resolvable(uri):
+                continue
+            entries.append({
+                "id": f"resource:{uri}",
+                "title": f"{_MARKET_TITLE[market]} — {desc} (OneQAZ resource)",
+                "url": f"{_BASE_URL}#resource:{uri}",
+                "name": uri,
+                "purpose": f"{_MARKET_TITLE[market]} {desc}",
+                "market": market,
+            })
 
     # 2) 시장 3개의 combined 최신 강한 시그널 top-20 (_strong_signals_for_market 재사용)
     try:
@@ -174,6 +229,7 @@ async def _build_corpus(mcp_server: Any) -> List[Dict[str, Any]]:
                         f"score {s.get('signal_score')}, confidence {s.get('confidence')}"
                     ),
                     "symbol": sym,
+                    "market": market,
                 })
     except Exception as e:
         logger.warning("search corpus: signals block failed: %s", e)
@@ -202,19 +258,43 @@ async def _get_corpus(force: bool = False) -> List[Dict[str, Any]]:
 
 def _tokenize(query: str) -> List[str]:
     toks = [t for t in re.split(r"[^a-z0-9가-힣_\-]+", (query or "").lower()) if t]
+    # [2026-10-07 SRCH-001] 1글자 라틴 토큰 제외 — "S&P 500" 이 's','p' 로 쪼개져 모든
+    # resource uri(market://...signals/positions)에 부분일치, 코인 자료 10건이 나갔다.
+    toks = [t for t in toks if len(t) >= 2 or re.match(r"[가-힣0-9]", t)]
     return [_QUERY_ALIASES.get(t, t) for t in toks]
 
 
-def _search_impl(query: str, entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """소문자 토큰 부분일치 스코어링 — name 3점, purpose 1점, 심볼 정확일치 5점."""
-    tokens = _tokenize(query)
+def _market_intents(query: str) -> List[str]:
+    q = (query or "").lower()
+    return [m for m, kws in _MARKET_INTENT_KEYWORDS.items() if any(k in q for k in kws)]
+
+
+def _uri_market(uri: str) -> Optional[str]:
+    m = re.match(r"^market://([\w\-]+)/", uri or "")
+    return _MARKET_ALIASES.get(m.group(1).lower()) if m else None
+
+
+def _search_impl(query: str, entries: List[Dict[str, Any]],
+                 intents: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """소문자 토큰 부분일치 스코어링 — name 3점, purpose 1점, 심볼 정확일치 5점.
+
+    [2026-10-07 SRCH-001] 시장 의도가 있으면 그 시장 entry +4, 다른 시장 entry 는 제외
+    (시장 무관 entry — tool·글로벌 resource — 는 유지).
+    """
+    # 숫자만인 토큰("500")은 purpose 의 점수 문자열("score 0.0500…")에 부분일치하는 잡음 —
+    # 6자리 이상(KRX 코드)만 남긴다. 종목 해석(_resolve_query_symbols)은 원문을 따로 본다.
+    tokens = [t for t in _tokenize(query) if not t.isdigit() or len(t) >= 6]
     if not tokens:
         return []
+    intents = intents or []
     scored: List[tuple] = []
     for e in entries:
         name = (e.get("name") or "").lower()
         purpose = (e.get("purpose") or "").lower()
         symbol = (e.get("symbol") or "").lower()
+        emkt = e.get("market")
+        if intents and emkt and emkt not in intents:
+            continue
         score = 0
         for tok in tokens:
             if symbol and tok == symbol:
@@ -223,6 +303,8 @@ def _search_impl(query: str, entries: List[Dict[str, Any]]) -> List[Dict[str, An
                 score += 3
             elif tok in purpose:
                 score += 1
+        if score > 0 and intents and emkt in intents:
+            score += 4
         if score > 0:
             scored.append((score, e))
     scored.sort(key=lambda x: (-x[0], x[1]["id"]))
@@ -233,69 +315,237 @@ def _search_impl(query: str, entries: List[Dict[str, Any]]) -> List[Dict[str, An
 
 
 # ---------------------------------------------------------------------------
+# [2026-10-07 SRCH-001] 종목 질의 해석 — 티커·종목명 → signal:{market}:{symbol}
+# ---------------------------------------------------------------------------
+# 종전 코퍼스의 시그널 entry 는 '시장별 강한 신호 top-20' 뿐이라, BTC·NVDA·삼성전자처럼
+# 그 순간 top-20 밖인 종목은 검색되지 않았다(NVDA·삼성전자 0건, "bitcoin signal" → CHR).
+# fetch("signal:crypto:BTC") 자체는 정상 동작하므로, 검색이 거기로 안내하면 된다.
+
+_SYMBOL_HIT_CACHE: Dict[str, Any] = {}
+_SYMBOL_HIT_TTL = 300
+_MAX_SYMBOL_CANDIDATES = 6
+
+
+def _symbol_candidates(query: str) -> List[str]:
+    """해석 시도할 문자열 — 원문 토큰(대소문자 보존) + 별칭 + 질의 전체."""
+    raw_toks = [t for t in re.split(r"[^A-Za-z0-9가-힣_\-&.]+", query or "") if t]
+    out: List[str] = []
+    whole = (query or "").strip()
+    if whole and len(raw_toks) > 1 and len(whole) <= 40:
+        out.append(whole)  # "S&P 500", "Bank of America" 같은 다단어 이름
+    for t in raw_toks:
+        t = t.strip(".&-")
+        if not t or (len(t) < 2 and not t.isdigit()):
+            continue
+        alias = _QUERY_ALIASES.get(t.lower())
+        out.append(alias.upper() if alias else t)
+    seen, uniq = set(), []
+    for c in out:
+        k = c.lower()
+        if k not in seen:
+            seen.add(k)
+            uniq.append(c)
+    return uniq[:_MAX_SYMBOL_CANDIDATES]
+
+
+def _resolve_query_symbols(query: str) -> List[Dict[str, Any]]:
+    """질의 → [{kind: 'signal'|'structure', market, symbol, name, how}] (검증된 것만)."""
+    key = (query or "").strip().lower()
+    hit = _SYMBOL_HIT_CACHE.get(key)
+    if hit and hit[0] > time.time():
+        return hit[1]
+    from oneqaz_trading_mcp.symbol_coverage import lookup_names, normalize_symbol, symbol_exists
+
+    hits: List[Dict[str, Any]] = []
+    seen = set()
+
+    def _push(kind: str, market: str, symbol: str, name: Optional[str], how: str) -> None:
+        k = (kind, market, symbol)
+        if k in seen:
+            return
+        seen.add(k)
+        hits.append({"kind": kind, "market": market, "symbol": symbol, "name": name, "how": how})
+
+    cands = _symbol_candidates(query)
+    whole = (query or "").strip().lower()
+    for cand in cands:
+        rows = lookup_names(cand, limit=8)
+        exact = [r for r in rows if r["match"] in ("code", "name")]
+        # 접두 일치("nvidia" → "NVIDIA Corporation")는 질의 전체가 그 이름일 때만 — 문장 속
+        # 일반어("korean stocks today" 의 korean)가 엉뚱한 종목으로 해석되는 것을 막는다.
+        prefix_ok = len(cands) == 1 or cand.lower() == whole
+        use = exact or ([r for r in rows if r["match"] == "name_prefix"][:2] if prefix_ok else [])
+        found_signal = False
+        for r in use:
+            mkt, sym = r.get("market_id"), normalize_symbol(r.get("symbol"))
+            if not mkt or not sym:
+                continue
+            name = next((r[k] for k in ("name_ko", "name_en")
+                         if r.get(k) and str(r[k]).upper() != sym), None)
+            if r["structure_only"]:
+                _push("structure", mkt, sym, name, r["match"])
+            elif symbol_exists(mkt, sym):
+                _push("signal", mkt, sym, name, r["match"])
+                found_signal = True
+        # 마스터에 아직 없는 신규 상장 티커 — 대문자로 쓴 토큰은 시그널 저장소를 직접 확인
+        if not found_signal and re.fullmatch(r"[A-Z0-9]{2,10}", cand):
+            for mkt in _SIGNAL_MARKETS:
+                if symbol_exists(mkt, cand):
+                    _push("signal", mkt, cand, None, "code")
+        if len(hits) >= 5:
+            break
+    # 시그널로 커버되는 심볼의 구조 바스켓 행(BTC 등)은 '시그널 아님' 안내가 틀리므로 뺀다
+    sig_keys = {(h["market"], h["symbol"]) for h in hits if h["kind"] == "signal"}
+    hits = [h for h in hits if h["kind"] == "signal" or (h["market"], h["symbol"]) not in sig_keys]
+    _SYMBOL_HIT_CACHE[key] = (time.time() + _SYMBOL_HIT_TTL, hits)
+    if len(_SYMBOL_HIT_CACHE) > 512:  # 무한 증식 방지 — 만료분 정리
+        now = time.time()
+        for k in [k for k, v in _SYMBOL_HIT_CACHE.items() if v[0] <= now]:
+            _SYMBOL_HIT_CACHE.pop(k, None)
+    return hits
+
+
+def _symbol_result(h: Dict[str, Any]) -> Dict[str, Any]:
+    mkt, sym, name = h["market"], h["symbol"], h.get("name")
+    nm = f" {name}" if name else ""
+    if h["kind"] == "signal":
+        return {
+            "id": f"signal:{mkt}:{sym}",
+            "title": f"{sym}{nm} — latest research signal ({_MARKET_TITLE[mkt]})",
+            "url": f"{_BASE_URL}#signal:{mkt}:{sym}",
+        }
+    uri = f"market://{mkt}/structure"
+    return {
+        "id": f"resource:{uri}",
+        "title": (
+            f"{sym}{nm} — tracked in the {_MARKET_TITLE[mkt]} market-structure ETF/index basket "
+            f"(not a per-symbol signal)"
+        ),
+        "url": f"{_BASE_URL}#resource:{uri}",
+    }
+
+
+def _intent_results(intents: List[str]) -> List[Dict[str, Any]]:
+    out = []
+    for mkt in intents:
+        for kind, desc in _MARKET_INTENT_RESOURCES:
+            uri = f"market://{mkt}/{kind}"
+            if _is_resolvable(uri):
+                out.append({
+                    "id": f"resource:{uri}",
+                    "title": f"{_MARKET_TITLE[mkt]} — {desc} (OneQAZ resource)",
+                    "url": f"{_BASE_URL}#resource:{uri}",
+                })
+    return out
+
+
+async def _search_v2(query: str, entries: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """순위: ① 검증된 종목 시그널 ② 구조 바스켓(ETF/지수) ③ 시장 의도 resource ④ 코퍼스.
+
+    반환은 OpenAI 고정 shape({results}) + 선택 note. 결과 id 는 전부 fetch 가 여는 것.
+    """
+    intents = _market_intents(query)
+    try:
+        sym_hits = await asyncio.to_thread(_resolve_query_symbols, query)
+    except Exception as e:  # 해석 실패해도 코퍼스 검색은 서빙
+        logger.warning("search symbol resolution failed (%r): %s", query, e)
+        sym_hits = []
+    ordered: List[Dict[str, Any]] = []
+    ordered += [_symbol_result(h) for h in sym_hits if h["kind"] == "signal"]
+    ordered += [_symbol_result(h) for h in sym_hits if h["kind"] == "structure"]
+    ordered += _intent_results(intents)
+    ordered += _search_impl(query, entries, intents)
+    results, seen = [], set()
+    for r in ordered:
+        if r["id"] in seen:
+            continue
+        seen.add(r["id"])
+        results.append(r)
+        if len(results) >= 10:
+            break
+    out: Dict[str, Any] = {"results": results}
+    if not results:
+        out["note"] = (
+            f"No OneQAZ document matches {query!r} — it appears to be outside coverage. "
+            + _COVERAGE_NOTE
+        )
+    elif not sym_hits and re.search(r"\b[A-Z0-9]{2,10}\b", query or "") and not intents:
+        # 티커처럼 보이는 토큰이 해석되지 않았는데 일반 결과만 나간 경우 — 커버리지 밖임을 명시
+        out["note"] = (
+            "No covered symbol matched the ticker-like terms in this query; results are general "
+            "OneQAZ documents. " + _COVERAGE_NOTE
+        )
+    return out
+
+
+# ---------------------------------------------------------------------------
 # fetch — resource resolver (Gemini 갭 메우기 핵심)
 # ---------------------------------------------------------------------------
 # 각 resource 의 등록 핸들러 내부가 호출하는 데이터 빌더 함수를 직접 import.
 # FastMCP 내부 read API 사용 금지 (정책). 커버 목록은 확실히 매핑된 것만.
 
-async def _resolve_resource(uri: str) -> Optional[Dict[str, Any]]:
-    """커버된 resource uri → 실데이터 dict. 미커버는 None."""
-    if uri == "market://global/summary":
-        from oneqaz_trading_mcp.resources.global_regime import _load_global_regime_summary
-        return await asyncio.to_thread(_load_global_regime_summary)
+def _resolver_for(uri: str):
+    """커버된 resource uri → 인자 없는 async 데이터 빌더. 미커버는 None.
 
-    if uri == "market://global/macro_events":
-        from oneqaz_trading_mcp.resources.external_context import _load_macro_events
-        return await asyncio.to_thread(_load_macro_events)
+    [2026-10-07 SRCH-001] 판정(_is_resolvable)과 실행(_resolve_resource)이 같은 표를 쓰게
+    한 곳으로 모았다 — 둘이 갈라지면 search 가 여는 척하는 id 를 fetch 가 못 여는 막다른
+    길이 다시 생긴다.
+    """
+    def _thread(mod: str, fn: str, *args):
+        async def _run():
+            import importlib
+            return await asyncio.to_thread(getattr(importlib.import_module(mod), fn), *args)
+        return _run
 
-    if uri == "market://indicators/fear-greed":
-        from oneqaz_trading_mcp.resources.indicators import _load_fear_greed_index
-        return await asyncio.to_thread(_load_fear_greed_index)
-
-    if uri == "market://indicators/regime":
-        from oneqaz_trading_mcp.resources.indicators import _load_market_regime_analysis
-        return await asyncio.to_thread(_load_market_regime_analysis)
-
-    if uri == "market://indicators/context":
-        from oneqaz_trading_mcp.resources.indicators import _load_market_context
-        return await asyncio.to_thread(_load_market_context)
+    static = {
+        "market://global/summary": ("mcps.resources.global_regime", "_load_global_regime_summary"),
+        "market://global/macro_events": ("mcps.resources.external_context", "_load_macro_events"),
+        "market://indicators/fear-greed": ("mcps.resources.indicators", "_load_fear_greed_index"),
+        "market://indicators/regime": ("mcps.resources.indicators", "_load_market_regime_analysis"),
+        "market://indicators/context": ("mcps.resources.indicators", "_load_market_context"),
+        "market://unified/cross-market": ("mcps.resources.unified_context", "_build_cross_market_context"),
+    }
+    if uri in static:
+        return _thread(*static[uri])
 
     if uri == "market://structure/all":
-        from oneqaz_trading_mcp.resources.market_structure import read_all_market_structures
-        txt = await asyncio.to_thread(read_all_market_structures)
-        return json.loads(txt)
-
-    if uri == "market://unified/cross-market":
-        from oneqaz_trading_mcp.resources.unified_context import _build_cross_market_context
-        return await asyncio.to_thread(_build_cross_market_context)
+        async def _all():
+            from oneqaz_trading_mcp.resources.market_structure import read_all_market_structures
+            return json.loads(await asyncio.to_thread(read_all_market_structures))
+        return _all
 
     m = re.match(r"^market://global/category/([\w\-]+)$", uri)
     if m:
-        from oneqaz_trading_mcp.resources.global_regime import _load_category_analysis
-        return await asyncio.to_thread(_load_category_analysis, m.group(1))
+        return _thread("mcps.resources.global_regime", "_load_category_analysis", m.group(1))
 
-    m = re.match(r"^market://([\w\-]+)/structure$", uri)
+    m = re.match(r"^market://([\w\-]+)/(structure|unified|external/summary)$", uri)
     if m:
         market = _MARKET_ALIASES.get(m.group(1).lower())
-        if market:
-            from oneqaz_trading_mcp.resources.market_structure import _load_structure_summary
-            return await asyncio.to_thread(_load_structure_summary, market)
+        if not market:
+            return None
+        kind = m.group(2)
+        if kind == "structure":
+            return _thread("mcps.resources.market_structure", "_load_structure_summary", market)
+        if kind == "external/summary":
+            return _thread("mcps.resources.external_context", "_load_external_summary", market)
 
-    m = re.match(r"^market://([\w\-]+)/unified$", uri)
-    if m:
-        market = _MARKET_ALIASES.get(m.group(1).lower())
-        if market:
+        async def _unified():
             from oneqaz_trading_mcp.resources.unified_context import _abuild_full_unified_context
             return await _abuild_full_unified_context(market)
-
-    m = re.match(r"^market://([\w\-]+)/external/summary$", uri)
-    if m:
-        market = _MARKET_ALIASES.get(m.group(1).lower())
-        if market:
-            from oneqaz_trading_mcp.resources.external_context import _load_external_summary
-            return await asyncio.to_thread(_load_external_summary, market)
-
+        return _unified
     return None
+
+
+def _is_resolvable(uri: str) -> bool:
+    return _resolver_for(uri) is not None
+
+
+async def _resolve_resource(uri: str) -> Optional[Dict[str, Any]]:
+    """커버된 resource uri → 실데이터 dict. 미커버는 None."""
+    runner = _resolver_for(uri)
+    if runner is None:
+        return None
+    return await runner()
 
 
 async def _fetch_resource_doc(uri: str) -> Dict[str, Any]:
@@ -361,20 +611,25 @@ async def _fetch_resource_doc(uri: str) -> Dict[str, Any]:
                 break
     except Exception:
         pass
+    # [2026-10-07 SRCH-001] 해석 불가 id 는 **오류 형태**로 — 종전 안내문은 성공 응답처럼 나가
+    # 소비자(및 Mac 사용 분석)가 성공으로 집계했다. search 는 이제 이런 id 를 내지 않는다.
     return _flat_envelope({
         "id": doc_id,
-        "title": f"{uri} (OneQAZ resource — description only)",
+        "title": f"{uri} (not fetchable)",
         "text": json.dumps({
+            "error": True,
+            "error_code": "no_data",
+            "reason": (
+                "This resource is not covered by the fetch resolver, so no data was returned. "
+                "MCP-capable clients can read it via the standard resources/read method on "
+                + _BASE_URL + "; otherwise use the search tool to find a fetchable id."
+            ),
             "uri": uri,
             "purpose": purpose or "(no description available)",
-            "note": (
-                "This resource is not covered by the fetch resolver. "
-                "MCP-capable clients can read it directly via the standard "
-                "resources/read method on " + _BASE_URL + "."
-            ),
         }, ensure_ascii=False),
         "url": url,
-        "metadata": {"kind": "resource", "uri": uri, "resolver_coverage": False},
+        "metadata": {"kind": "resource", "uri": uri, "resolver_coverage": False,
+                     "error": "resolver_not_covered"},
     })
 
 
@@ -397,7 +652,8 @@ async def _fetch_tool_doc(name: str) -> Dict[str, Any]:
             "metadata": {"kind": "tool", "error": "catalog_unavailable"},
         })
     try:
-        tools = await _MCP_INSTANCE.get_tools()
+        from oneqaz_trading_mcp.fastmcp_compat import catalog_tools
+        tools = await catalog_tools(_MCP_INSTANCE)
     except Exception as e:
         tools = {}
         logger.warning("fetch tool doc: get_tools failed: %s", e)
@@ -498,6 +754,25 @@ async def _fetch_signal_doc(rest: str) -> Dict[str, Any]:
             "metadata": {"kind": "signal", "error": "internal_error"},
         })
     if sig is None:
+        # [2026-10-07 VALID-001] 없는 종목은 symbol_not_found + 후보(종목명·시장 착오)로 —
+        # get_signals 등과 같은 공용 검사. 종목은 있는데 combined 가 없을 때만 no_data.
+        nf = None
+        try:
+            from oneqaz_trading_mcp.symbol_coverage import check_symbol
+            nf = await asyncio.to_thread(check_symbol, market, symbol, "fetch")
+        except Exception as e:
+            logger.warning("fetch signal coverage check failed (%s:%s): %s", market, symbol, e)
+        if nf:
+            body = {k: nf.get(k) for k in ("error", "error_code", "reason", "retryable",
+                                           "suggestions", "coverage_definition")}
+            return _flat_envelope({
+                "id": doc_id,
+                "title": f"{symbol} ({market}) — symbol not covered",
+                "text": json.dumps(body, ensure_ascii=False),
+                "url": url,
+                "metadata": {"kind": "signal", "market": market, "symbol": symbol,
+                             "error": "symbol_not_found"},
+            })
         return _flat_envelope({
             "id": doc_id,
             "title": f"{symbol} signal ({market}) — no data",
@@ -561,8 +836,12 @@ def register_search_fetch_tools(mcp, cache):
     _MCP_INSTANCE = mcp
     _CACHE_REF = cache
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
-    async def search(query: str) -> Dict[str, Any]:
+    @mcp.tool(title='Search', annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
+    async def search(
+        query: Annotated[str, Field(
+            description='free-text search string (English/Korean, symbols like BTC/AAPL)'
+        )],
+    ) -> SearchResult:
         """
         Purpose: ChatGPT-connector-standard discovery search over OneQAZ's live surface —
             tools, resources, and the latest strong combined signals across crypto /
@@ -576,21 +855,23 @@ def register_search_fetch_tools(mcp, cache):
         Prerequisites: none.
         Next steps: pass any result id to `fetch` for the full document.
         Caveats: corpus is rebuilt at most every 10 minutes (tool/resource catalog +
-            top-20 strong signals per market). Empty results list means no match.
+            top-20 strong signals per market). Ticker / company-name queries (BTC, NVDA,
+            삼성전자) resolve to `signal:{market}:{symbol}` first; market words (S&P, KOSPI,
+            crypto) surface that market's resources. Every result id is fetchable. Empty
+            results come with a `note` explaining coverage.
         Output: {results: [{id, title, url}], disclaimer, is_investment_advice,
             data_classification} — flat envelope, OpenAI fixed shape.
 
-        Args:
-            query: free-text search string (English/Korean, symbols like BTC/AAPL)
-
-        Disclaimer: Information only, not investment advice.
         """
         entries = await _get_corpus()
-        results = _search_impl(query, entries)
-        return _flat_envelope({"results": results})
+        return _flat_envelope(await _search_v2(query, entries))
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
-    async def fetch(id: str) -> Dict[str, Any]:
+    @mcp.tool(title='Fetch Document', annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
+    async def fetch(
+        id: Annotated[str, Field(
+            description='document id — "tool:{name}", "resource:{uri}", or "signal:{market}:{symbol}" (market: crypto / kr_stock / us_stock)'
+        )],
+    ) -> FetchResult:
         """
         Purpose: ChatGPT-connector-standard document fetch by id from `search` results.
             Namespaces: `tool:{name}` returns the tool's full documentation and how to
@@ -610,11 +891,6 @@ def register_search_fetch_tools(mcp, cache):
         Output: {id, title, text, url, metadata, disclaimer, is_investment_advice,
             data_classification} — flat envelope, OpenAI fixed shape.
 
-        Args:
-            id: document id — "tool:{name}", "resource:{uri}", or
-                "signal:{market}:{symbol}" (market: crypto / kr_stock / us_stock)
-
-        Disclaimer: Information only, not investment advice.
         """
         return await _fetch_impl(id)
 

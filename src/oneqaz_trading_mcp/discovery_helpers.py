@@ -30,6 +30,8 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from oneqaz_trading_mcp.fastmcp_compat import catalog_resource_templates, catalog_resources, catalog_tools
+
 logger = logging.getLogger("MarketMCP.Discovery")
 
 # ---------------------------------------------------------------------------
@@ -260,17 +262,17 @@ async def introspect_catalog(mcp_server) -> Dict[str, Any]:
         "templates_count": 0,
     }
     try:
-        tools = await mcp_server.get_tools()
+        tools = await catalog_tools(mcp_server)
     except Exception as e:
         logger.warning("introspect_catalog: get_tools failed: %s", e)
         tools = {}
     try:
-        resources = await mcp_server.get_resources()
+        resources = await catalog_resources(mcp_server)
     except Exception as e:
         logger.warning("introspect_catalog: get_resources failed: %s", e)
         resources = {}
     try:
-        templates = await mcp_server.get_resource_templates()
+        templates = await catalog_resource_templates(mcp_server)
     except Exception as e:
         logger.warning("introspect_catalog: get_resource_templates failed: %s", e)
         templates = {}
@@ -326,18 +328,31 @@ async def introspect_catalog(mcp_server) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 # 측정 대상: (label, schema, table, ts_column)
-# ts_column 은 epoch sec 또는 timestamptz. 두 형태 모두 지원.
-# schema 이름은 shared/db/compat.py 의 KNOWN_SCHEMAS 와 일치.
-# probe 가 실패해도 다른 probe 는 영향 없음 — graceful degrade.
 # schema 이름은 shared/db/compat.py 의 KNOWN_SCHEMAS 와 일치.
 # 컬럼 타입 — epoch_sec: bigint/double sec. timestamptz: PG timestamptz. text_iso: ISO8601 텍스트.
 # probe 가 실패해도 다른 probe 는 영향 없음 — graceful degrade.
-_FRESHNESS_PROBES: List[Dict[str, str]] = [
-    {"label": "signals_coin", "schema": "market_coin", "table": "signals", "ts_col": "timestamp", "ts_type": "epoch_sec"},
-    {"label": "structure_coin", "schema": "market_coin_struct", "table": "structure_predictions", "ts_col": "prediction_ts", "ts_type": "epoch_sec"},
-    {"label": "macro_accuracy", "schema": "market_global", "table": "macro_prediction_accuracy", "ts_col": "last_updated", "ts_type": "text_iso"},
-    {"label": "news_events", "schema": "external_context", "table": "events", "ts_col": "ts", "ts_type": "timestamptz"},
-    {"label": "mcp_requests", "schema": "mcp_analytics", "table": "mcp_requests", "ts_col": "ts", "ts_type": "epoch_sec"},
+#
+# [2026-10-13] stale_after_sec 는 probe 별이다 — ts_col 의 **의미**가 서로 다르기 때문.
+#   ts_basis: write_time(기록 시각) / candle_time(봉 시각) / bucket_start(예측 대상 기간 시작).
+#   - structure_coin: prediction_ts 는 2026-08-02 부터 인터벌 버킷 시작으로 양자화됐다
+#     (market/market_structure/learning/prediction_recorder.py `_bucket_ts`). 최신값이 1d 버킷이라
+#     정상이어도 lag 가 0~24h 를 오간다 → 3600s 임계로는 하루 23시간이 거짓 stale 이었다.
+#     30h = 24h 버킷 + 루프 지연 여유.
+#   - news_events: 종전엔 external_context.events(구 이벤트 저장소 — writer 가 api.events 로 이전,
+#     2026-04-16 정지)를 보고 있어 탄생(05-10)부터 stale 이었다. 실뉴스 테이블로 교정.
+_DEFAULT_STALE_AFTER_SEC = 3600
+_FRESHNESS_PROBES: List[Dict[str, Any]] = [
+    {"label": "signals_coin", "schema": "market_coin", "table": "signals", "ts_col": "timestamp",
+     "ts_type": "epoch_sec", "ts_basis": "candle_time"},
+    {"label": "structure_coin", "schema": "market_coin_struct", "table": "structure_predictions",
+     "ts_col": "prediction_ts", "ts_type": "epoch_sec", "ts_basis": "bucket_start",
+     "stale_after_sec": 30 * 3600},
+    {"label": "macro_accuracy", "schema": "market_global", "table": "macro_prediction_accuracy",
+     "ts_col": "last_updated", "ts_type": "text_iso", "ts_basis": "write_time"},
+    {"label": "news_events", "schema": "external_context", "table": "news_events", "ts_col": "created_at",
+     "ts_type": "timestamptz", "ts_basis": "write_time"},
+    {"label": "mcp_requests", "schema": "mcp_analytics", "table": "mcp_requests", "ts_col": "ts",
+     "ts_type": "epoch_sec", "ts_basis": "write_time"},
 ]
 
 
@@ -388,15 +403,23 @@ def data_freshness_snapshot() -> Dict[str, Dict[str, Any]]:
                 out[label] = {"status": "unknown", "reason": "no_row"}
             else:
                 last_ts = row["m"] if isinstance(row, dict) else row[0]
+                stale_after = int(probe.get("stale_after_sec", _DEFAULT_STALE_AFTER_SEC))
+                # 어떤 컬럼을 무슨 의미로 쟀는지 함께 싣는다 — 소비자가 lag 를 해석할 수 있게.
+                basis = {
+                    "source": f"{probe['schema']}.{probe['table']}.{probe['ts_col']}",
+                    "ts_basis": probe["ts_basis"],
+                    "stale_after_seconds": stale_after,
+                }
                 if last_ts is None:
-                    out[label] = {"status": "empty", "lag_seconds": None, "last_ts": None}
+                    out[label] = {"status": "empty", "lag_seconds": None, "last_ts": None, **basis}
                 else:
                     last_ts = int(last_ts)
                     lag = max(0, now - last_ts)
                     out[label] = {
-                        "status": "ok" if lag < 3600 else "stale",
+                        "status": "ok" if lag < stale_after else "stale",
                         "lag_seconds": lag,
                         "last_ts": last_ts,
+                        **basis,
                     }
         except Exception as e:
             out[label] = {"status": "unknown", "reason": f"query_failed: {str(e)[:80]}"}

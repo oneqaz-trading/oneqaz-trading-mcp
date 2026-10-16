@@ -194,20 +194,17 @@ def for_news_lead(data: Dict[str, Any]) -> List[Dict[str, Any]]:
         ))
         return actions
 
-    leads = [i.get("avg_lead_time_minutes") for i in indicators if isinstance(i, dict)]
-    leads_pos = [x for x in leads if x is not None and x > 0]
-
-    if leads_pos:
-        actions.append(_action(
-            "verify_anticipation_classification",
-            "get_news_causality_breakdown",
-            f"{len(leads_pos)}개 event type 에서 양의 lead time. anticipated vs surprise 분류로 신호 결 검증.",
-            priority="high",
-        ))
+    # [2026-09-18 Ticket A] 선행성을 전제한 intent/rationale 제거.
+    # lead time 기반 분기도 삭제 — 해당 필드는 public 응답에서 비노출.
+    actions.append(_action(
+        "see_label_counts",
+        "get_news_causality_breakdown",
+        f"{len(indicators)}개 그룹 수집됨. 뉴스 라벨(anticipated/surprise) 건수 분포 확인.",
+    ))
     actions.append(_action(
         "verify_governance",
         "get_feature_governance_state",
-        "선행 감지가 통계 검증 통과한 feature 인지 확인 (3-track p-value).",
+        "뉴스 계열 feature 가 3-track 통계 검증의 어느 단계인지 확인.",
     ))
     return actions
 
@@ -223,19 +220,19 @@ def for_news_causality(data: Dict[str, Any]) -> List[Dict[str, Any]]:
         return [_action(
             "fallback_lead_indicator",
             "get_news_leading_indicator_performance",
-            "causality breakdown 비어있음. 시스템이 lead time 자체는 측정하는지 확인.",
+            "causality breakdown 비어있음. 뉴스 파이프라인이 그룹 자체는 쌓는지 확인.",
         )]
 
-    # anticipated 비율이 surprise 보다 높으면 OneQAZ 의 강점 → governance 로 검증
+    # [2026-09-18 Ticket A] "OneQAZ 의 강점" 전제 제거 — 라벨 타당성은 감사 중.
     actions.append(_action(
         "verify_with_governance",
         "get_feature_governance_state",
-        "분류 결과가 어떤 feature 에 의존하는지 governance 에서 cross-check.",
+        "라벨 산출이 어떤 feature 에 의존하는지 governance 에서 cross-check.",
     ))
     actions.append(_action(
         "see_macro_alignment",
         "get_macro_influence_map",
-        "anticipated 분류가 정적 macro influence 가설과 일관되는지 비교.",
+        "뉴스 라벨 분포가 정적 macro influence 가설과 일관되는지 비교.",
     ))
     return actions
 
@@ -343,10 +340,11 @@ def for_strategy_leaderboard(data: Dict[str, Any]) -> List[Dict[str, Any]]:
             "get_active_predictions",
             "per-symbol 검증된 전략들이 현재 어떤 예측을 내고 있는지 확인.",
         ))
+    # [2026-09-18 Ticket A] "뉴스 선행 감지" 전제 제거 — 선행성 미검증.
     actions.append(_action(
-        "see_news_lead",
+        "see_news_coverage",
         "get_news_leading_indicator_performance",
-        "전략 우위가 뉴스 선행 감지에서 오는지 확인 (Layer A evidence).",
+        "뉴스 파이프라인이 어떤 이벤트 그룹을 얼마나 쌓았는지 커버리지 확인.",
     ))
     return actions
 

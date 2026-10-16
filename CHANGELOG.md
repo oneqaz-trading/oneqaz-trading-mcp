@@ -6,6 +6,45 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-17
+
+Full resync with the hosted server (`api.oneqaz.com/mcp` as of 2026-10-17) — the first code sync since
+0.4.0. Includes the 0.4.6 README corrections.
+
+### Added
+
+- Entity-context tools `get_symbol_context`, `get_group_context`, `get_market_context` (42 tools, the same
+  as the hosted endpoint), plus `get_account_status` when OAuth account connection is on.
+- 4 MCP prompts (entry points), OAuth account connection code (off by default: `MCP_OAUTH_MODE`,
+  `MCP_OAUTH_AS`), error-envelope middleware, `/mcp/` path normalization, onboarding and verification
+  helpers, and every hosted fix made since 2026-08-23.
+- `self_host_auth` (public-only): the `MCP_TIER_RESOLVER` hook now lives here. A resolver can also return
+  `"invalid"` to reject a key with HTTP 401, like the hosted server.
+- Dependencies `holidays` (KRX / NYSE session calendars) and `tzdata` (time zones on Windows).
+
+### Changed
+
+- FastMCP range widened to `>=2.14,!=3.*,<5`. Tested on FastMCP 2.14.7, 4.0.11 and 4.1.0; 3.x is excluded
+  as untested.
+- `oneqaz-trading-mcp serve` sets `DB_BACKEND=postgres` when unset (an unset value was read as the retired
+  SQLite backend and every query was refused), and Windows consoles no longer print a logging traceback
+  for each emoji in the server log.
+- `scripts/sync_from_monorepo.py` repaired and hardened: the API-key store is mapped by an import rewrite
+  instead of a text patch (the old anchor stopped matching on 2026-09-23, which blocked every sync), the
+  `entity/` subpackage and four helpers are mirrored, files removed upstream are removed here, and the
+  sync now fails on unresolved monorepo imports, credential-shaped literals and public IP literals.
+
+### Removed
+
+- The hosted default of `MCP_SELF_TRAFFIC_IPS` (usage-analytics configuration that only applies to the
+  hosted server). The default is now empty.
+
+### Notes
+
+- Two data paths still depend on monorepo-only modules and degrade with explicit errors or `gaps`
+  entries: `get_macro_influence_map` (and the macro links in entity context) and agent-history RAG
+  context in the unified resources.
+
 ## [0.4.6] - 2026-10-17
 
 Docs-only release. The server code is unchanged from 0.4.5.

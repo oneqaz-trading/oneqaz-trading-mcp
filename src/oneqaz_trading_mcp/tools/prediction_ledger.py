@@ -19,16 +19,29 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
+
+from pydantic import Field
 
 from oneqaz_trading_mcp.config import GLOBAL_REGIME_DIR
 from oneqaz_trading_mcp.resources.resource_response import (
+    normalize_choice,
     MCPErrorCode,
     mcp_error,
     wrap_tool_response,
 )
 
 logger = logging.getLogger("MarketMCP")
+
+# [2026-09-23 P0-B] pinned outputSchema — FastMCP 가 반환 annotation 을
+# introspect 해 outputSchema 를 만든다. pydantic 부재 시 Dict 로 격하.
+try:
+    from oneqaz_trading_mcp.schemas import LedgerIntegrityEnvelope, ResolvedPredictionsEnvelope
+except ImportError:  # pragma: no cover
+    LedgerIntegrityEnvelope = Dict[str, Any]  # type: ignore[assignment,misc]
+    ResolvedPredictionsEnvelope = Dict[str, Any]  # type: ignore[assignment,misc]
+
+
 
 _MAX_PAGE = 500
 
@@ -50,6 +63,13 @@ def _get_resolved_predictions(
     cursor: int = 0,
     limit: int = 100,
 ) -> Dict[str, Any]:
+    # [2026-09-22] 열거형 파라미터 검증 — 종전에는 미지 시장값이 WHERE 절에
+    # 그대로 들어가 **조용히 0건**을 냈다. 0건은 "해당 데이터가 없다" 라는
+    # 유효한 답과 구분되지 않아 호출자가 오타를 영영 모른다.
+    target_market, _err = normalize_choice('market', 'target_market', target_market)
+    if _err:
+        return _err
+
     limit = max(1, min(int(limit), _MAX_PAGE))
     try:
         cursor = max(0, int(cursor))
@@ -63,7 +83,9 @@ def _get_resolved_predictions(
             params: List[Any] = [cursor]
             if target_market:
                 where.append("target_market = ?")
-                params.append(target_market)
+                # [2026-10-07] 테이블 값은 *_market — 정본값 그대로 넣으면 조용한 0건 (trust_layer._macro_target 참조)
+                from oneqaz_trading_mcp.tools.trust_layer import _macro_target
+                params.append(_macro_target(target_market))
             if source_category:
                 where.append("source_category = ?")
                 params.append(source_category)
@@ -78,7 +100,9 @@ def _get_resolved_predictions(
             rows = conn.execute(
                 "SELECT id, source_category, source_regime_change, target_market, "
                 "       predicted_regime_shift, lag_hours, confidence, created_at, "
-                "       resolved_at, outcome, actual_regime_shift "
+                "       resolved_at, outcome, actual_regime_shift, "
+                # [2026-10-07] additive — 섀도우(강등 셀) 표식·판정 버전. 해시 recipe v1 범위 밖
+                "       lifecycle_state_at_creation, judge_version "
                 "FROM macro_regime_predictions "
                 f"WHERE {' AND '.join(where)} ORDER BY id LIMIT ?",
                 (*params, limit + 1),
@@ -192,15 +216,27 @@ def _na_ledger(data: Dict[str, Any]) -> list:
 def register_prediction_ledger_tools(mcp, cache):
     """예측 원장 검증 도구 2종 등록."""
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
+    @mcp.tool(title='Resolved Predictions', annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
     async def get_resolved_predictions(
-        target_market: Optional[str] = None,
-        source_category: Optional[str] = None,
-        day: Optional[str] = None,
-        status: str = "all",
-        cursor: int = 0,
-        limit: int = 100,
-    ) -> Dict[str, Any]:
+        target_market: Annotated[Optional[str], Field(
+            description='filter e.g. "coin_market" / "kr_market" / "us_market". Aliases coin/kr/us and any letter case are accepted.', json_schema_extra={'enum': ['crypto', 'kr_stock', 'us_stock']}
+        )] = None,
+        source_category: Annotated[Optional[str], Field(
+            description='filter e.g. "vix", "bonds", "commodities"'
+        )] = None,
+        day: Annotated[Optional[str], Field(
+            description='filter by created day "YYYY-MM-DD" (UTC, string prefix of created_at)'
+        )] = None,
+        status: Annotated[str, Field(
+            description='"all" | "resolved" | "open"'
+        )] = 'all',
+        cursor: Annotated[int, Field(
+            description='last id from previous page (0 = start)'
+        )] = 0,
+        limit: Annotated[int, Field(
+            description='page size (max 500)'
+        )] = 100,
+    ) -> ResolvedPredictionsEnvelope:
         """
         Purpose: Raw, row-level prediction ledger — every macro regime prediction's full
             lifecycle (created_at -> resolved_at -> outcome). This is the auditable evidence
@@ -218,15 +254,6 @@ def register_prediction_ledger_tools(mcp, cache):
             target_market, predicted_regime_shift, lag_hours, confidence, created_at,
             resolved_at, outcome, actual_regime_shift}, count, next_cursor, has_more, meta }.
 
-        Args:
-            target_market: filter e.g. "coin_market" / "kr_market" / "us_market"
-            source_category: filter e.g. "vix", "bonds", "commodities"
-            day: filter by created day "YYYY-MM-DD" (UTC, string prefix of created_at)
-            status: "all" | "resolved" | "open"
-            cursor: last id from previous page (0 = start)
-            limit: page size (max 500)
-
-        Disclaimer: Information only, not investment advice.
         """
         result = await asyncio.to_thread(
             _get_resolved_predictions, target_market, source_category, day, status, cursor, limit
@@ -237,8 +264,12 @@ def register_prediction_ledger_tools(mcp, cache):
             next_actions_fn=_na_resolved,
         )
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
-    async def get_ledger_integrity(days: int = 30) -> Dict[str, Any]:
+    @mcp.tool(title='Prediction Ledger Integrity', annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
+    async def get_ledger_integrity(
+        days: Annotated[int, Field(
+            description='how many most-recent chain entries to return (max 400)'
+        )] = 30,
+    ) -> LedgerIntegrityEnvelope:
         """
         Purpose: Tamper-evidence for the prediction ledger — a daily SHA-256 hash chain
             over all created/resolved prediction rows, with the exact canonical recipe
@@ -256,10 +287,6 @@ def register_prediction_ledger_tools(mcp, cache):
             entries[] {day, created_count, resolved_count, created_hash, resolved_hash,
             prev_chain_hash, chain_hash, computed_at}, verification_hint }.
 
-        Args:
-            days: how many most-recent chain entries to return (max 400)
-
-        Disclaimer: Information only, not investment advice.
         """
         result = await asyncio.to_thread(_get_ledger_integrity, days)
         return wrap_tool_response(

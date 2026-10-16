@@ -22,12 +22,23 @@ import asyncio
 import logging
 import math
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
+
+from pydantic import Field
 
 from oneqaz_trading_mcp.config import CACHE_TTL_TRADE_HISTORY
 from oneqaz_trading_mcp.resources.resource_response import mcp_error, MCPErrorCode, wrap_tool_response
 
 logger = logging.getLogger("MarketMCP")
+
+# [2026-09-23 P0-B] pinned outputSchema — FastMCP 가 반환 annotation 을
+# introspect 해 outputSchema 를 만든다. pydantic 부재 시 Dict 로 격하.
+try:
+    from oneqaz_trading_mcp.schemas import PerformanceMetricsEnvelope
+except ImportError:  # pragma: no cover
+    PerformanceMetricsEnvelope = Dict[str, Any]  # type: ignore[assignment,misc]
+
+
 
 # 공개 트랙레코드 앵커 (v1_daily_equity 의 equity_index_public 앵커와 동일)
 PUBLIC_ANCHOR = date(2026, 6, 16)
@@ -324,14 +335,24 @@ def _user_summary(data: dict) -> str:
 def register_performance_metrics_tools(mcp, cache):
     """성과 지표 Tool 등록"""
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
+    @mcp.tool(title='Performance Metrics', annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
     async def get_performance_metrics(
-        market: str,
-        account_type: str,
-        window_start: Optional[str] = None,
-        window_end: Optional[str] = None,
-        include_daily_curve: bool = False,
-    ) -> Dict[str, Any]:
+        market: Annotated[str, Field(
+            description="coin | kr | us | all (aliases crypto/kr_stock/us_stock accepted). 'all' = fixed 1/3 allocation across the three books."
+        )],
+        account_type: Annotated[str, Field(
+            description="REQUIRED. 'paper' (simulated) or 'live' (real — not yet available)."
+        )],
+        window_start: Annotated[Optional[str], Field(
+            description='ISO date (YYYY-MM-DD). Default 2026-06-16 (public track-record anchor).'
+        )] = None,
+        window_end: Annotated[Optional[str], Field(
+            description='ISO date. Default today (KST).'
+        )] = None,
+        include_daily_curve: Annotated[bool, Field(
+            description='include per-day equity curve rows (default false).'
+        )] = False,
+    ) -> PerformanceMetricsEnvelope:
         """
         Purpose: Portfolio-level performance metrics (MDD / Sharpe / Sortino / Calmar /
             monthly returns / equity curve) over a FIXED window — the single canonical
@@ -347,15 +368,6 @@ def register_performance_metrics_tools(mcp, cache):
             real-money records exist (paper and live curves are never concatenated).
             Fixed window → same inputs always reproduce the same numbers (as-of verifiable).
 
-        Args:
-            market: coin | kr | us | all (aliases crypto/kr_stock/us_stock accepted).
-                'all' = fixed 1/3 allocation across the three books.
-            account_type: REQUIRED. 'paper' (simulated) or 'live' (real — not yet available).
-            window_start: ISO date (YYYY-MM-DD). Default 2026-06-16 (public track-record anchor).
-            window_end: ISO date. Default today (KST).
-            include_daily_curve: include per-day equity curve rows (default false).
-
-        Disclaimer: Information only, not investment advice. Simulated performance.
         """
         cache_key = f"perf_metrics_{market}_{account_type}_{window_start}_{window_end}_{include_daily_curve}"
         cached = cache.get(cache_key, ttl=CACHE_TTL_TRADE_HISTORY * 3)

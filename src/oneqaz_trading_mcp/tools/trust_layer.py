@@ -5,8 +5,12 @@ Trust Layer Tools (P0)
 B2AI 구매 여정을 위한 신뢰 증명 도구. AI 에이전트가 OneQAZ MCP를 검증하고
 사용자에게 추천할 수 있는 정량 근거를 제공한다.
 
-5-layer Trust 피라미드 중 Layer A/B/C 커버 (가장 강력한 증거):
-- Layer A (예견 능력): get_news_leading_indicator_performance, get_news_causality_breakdown
+5-layer Trust 피라미드 중 Layer A/B/C 커버:
+- Layer A (뉴스 파이프라인 커버리지): get_news_leading_indicator_performance,
+  get_news_causality_breakdown
+  ⚠️ [2026-09-18 Ticket A] 이 2종은 UNVERIFIED — 선행 감지 성과 주장으로 노출 금지.
+     계산 방법 감사(Ticket B) 전까지 raw 수치 비노출 + verification_status 표식.
+     상태 전환(VERIFIED/INVALIDATED)은 PM 승인 사안. 정책은 mcps/verification.py.
 - Layer B (거시-미시 인과): get_prediction_accuracy, get_backtest_tuning_state, get_monthly_accuracy_trend
 - Layer C (거버넌스 투명성): get_feature_governance_state
 
@@ -26,8 +30,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
+
+from pydantic import Field
 
 from oneqaz_trading_mcp.config import (
     COIN_DATA_DIR,
@@ -45,71 +52,149 @@ from oneqaz_trading_mcp.config import (
 # Pydantic JSONSchema as `outputSchema` in tools/list.
 try:
     from oneqaz_trading_mcp.schemas import (
+        ActivePredictionsEnvelope,
+        BacktestTuningStateEnvelope,
+        CrossMarketCorrelationEnvelope,
+        ExplainDecisionEnvelope,
+        FeatureGovernanceStateEnvelope,
+        MacroInfluenceMapEnvelope,
+        MonthlyAccuracyTrendEnvelope,
+        NewsCausalityBreakdownEnvelope,
+        NewsLeadingIndicatorPerformanceEnvelope,
         PredictionAccuracyEnvelope,
         StrategyLeaderboardEnvelope,
-        ExplainDecisionEnvelope,
-        ActivePredictionsEnvelope,
-        MonthlyAccuracyTrendEnvelope,
-        BacktestTuningStateEnvelope,
+        StructureCalibrationEnvelope,
+        StructureValidationHistoryEnvelope,
     )
 except ImportError:  # pragma: no cover
+    ActivePredictionsEnvelope = Dict[str, Any]  # type: ignore[assignment,misc]
+    BacktestTuningStateEnvelope = Dict[str, Any]  # type: ignore[assignment,misc]
+    CrossMarketCorrelationEnvelope = Dict[str, Any]  # type: ignore[assignment,misc]
+    ExplainDecisionEnvelope = Dict[str, Any]  # type: ignore[assignment,misc]
+    FeatureGovernanceStateEnvelope = Dict[str, Any]  # type: ignore[assignment,misc]
+    MacroInfluenceMapEnvelope = Dict[str, Any]  # type: ignore[assignment,misc]
+    MonthlyAccuracyTrendEnvelope = Dict[str, Any]  # type: ignore[assignment,misc]
+    NewsCausalityBreakdownEnvelope = Dict[str, Any]  # type: ignore[assignment,misc]
+    NewsLeadingIndicatorPerformanceEnvelope = Dict[str, Any]  # type: ignore[assignment,misc]
     PredictionAccuracyEnvelope = Dict[str, Any]  # type: ignore[assignment,misc]
     StrategyLeaderboardEnvelope = Dict[str, Any]  # type: ignore[assignment,misc]
-    ExplainDecisionEnvelope = Dict[str, Any]  # type: ignore[assignment,misc]
-    ActivePredictionsEnvelope = Dict[str, Any]  # type: ignore[assignment,misc]
-    MonthlyAccuracyTrendEnvelope = Dict[str, Any]  # type: ignore[assignment,misc]
-    BacktestTuningStateEnvelope = Dict[str, Any]  # type: ignore[assignment,misc]
+    StructureCalibrationEnvelope = Dict[str, Any]  # type: ignore[assignment,misc]
+    StructureValidationHistoryEnvelope = Dict[str, Any]  # type: ignore[assignment,misc]
 
 from oneqaz_trading_mcp.resources.resource_response import (
     MCPErrorAction,
     MCPErrorCode,
+    clamp_limit,
+    hoist_constant_fields,
     mcp_error,
+    normalize_choice,
+    truncation_fields,
     wrap_tool_response,
 )
+
+# [2026-09-22] governance / calibration 페이지네이션.
+# 이 2종은 limit 파라미터가 아예 없어 531행(494KB) / 463행(199KB)을 통째로
+# 실어보냈다. limit 신설과 잘림 노출이 한 번에 들어가므로 "노출 먼저 → 기본값
+# 나중" 순서 충돌이 없다.
+_GOV_LIMIT_DEFAULT = 50
+_GOV_LIMIT_MAX = 500
+# ⚠️ status·feature_type 은 hoist 금지 — lifecycle 상태 자체가 이 tool 의 제품
+# 가치다. 저엔트로피라고 빼면 tool 의 존재 이유가 사라진다.
+_GOV_HOISTABLE_FIELDS = ("importance_rank", "delta_mdd")
+
+_CALIB_LIMIT_DEFAULT = 50
+_CALIB_LIMIT_MAX = 500
+# ⚠️ calibration 은 hoist 대상이 없다. market_id/interval/regime_bucket 은
+# **행 식별 차원키**라 행에서 빠지면 그 행이 무의미해진다 (signals 의 currency
+# 와 성격이 정반대). 필터 호출로 d=1 이 되면 hoist 가 발동해버리므로 아예
+# 빈 튜플로 둔다.
+_CALIB_HOISTABLE_FIELDS: tuple = ()
 
 logger = logging.getLogger("MarketMCP")
 
 
-def _pred_accuracy_aggregates(data: dict):
-    summary = data.get("summary") or {}
-    cells = []
-    for category, markets in summary.items():
+def _forecast_baseline_aggregates(data: dict) -> Dict[str, Any]:
+    """[2026-10-07 TRUST-001] forecast 셀(nowcast 제외)의 적중·기준선 평균.
+
+    종전 요약은 "avg hit rate 44.2% vs 33.3% random baseline" — meta.primary_baseline 이
+    persistence 인데 요약만 uniform 을 썼고 nowcast(0h)까지 평균에 섞었다.
+    """
+    accs, pers, majs, maj_accs, beats = [], [], [], [], 0
+    for markets in (data.get("summary") or {}).values():
         if not isinstance(markets, dict):
             continue
-        for market, lags in markets.items():
+        for lags in markets.values():
             if not isinstance(lags, dict):
                 continue
-            for lag, info in lags.items():
-                if isinstance(info, dict) and isinstance(info.get("accuracy"), (int, float)):
-                    cells.append(info["accuracy"])
-    if not cells:
-        return 0, None
-    return len(cells), sum(cells) / len(cells)
+            for info in lags.values():
+                if not isinstance(info, dict) or info.get("horizon_type") != "forecast":
+                    continue
+                if isinstance(info.get("accuracy"), (int, float)):
+                    accs.append(info["accuracy"])
+                if isinstance(info.get("persistence_accuracy"), (int, float)):
+                    pers.append(info["persistence_accuracy"])
+                if isinstance(info.get("majority_class_baseline"), (int, float)) and \
+                        isinstance(info.get("accuracy_since_label_change"), (int, float)):
+                    majs.append(info["majority_class_baseline"])
+                    maj_accs.append(info["accuracy_since_label_change"])
+                    beats += 1 if info.get("beats_majority_baseline") else 0
+
+    def _avg(v):
+        return sum(v) / len(v) if v else None
+    edges = data.get("edge_cells") or []
+    return {
+        "n": len(accs), "acc": _avg(accs), "pers": _avg(pers),
+        "maj": _avg(majs), "maj_acc": _avg(maj_accs), "maj_n": len(majs), "beats_maj": beats,
+        "edge_n": len(edges),
+        "edge_beats_maj": sum(1 for c in edges if c.get("beats_majority_baseline")),
+    }
 
 
 def _ai_summary_pred_accuracy(data: dict) -> str:
     # [2026-07-08] 기저율 병기 — 첫 줄만 읽는 AI 가 '35% = 못 맞춤(50% 가정)'으로
     # 오독하던 문제. 해명이 full_data 깊숙이 있으면 못 본다 (감사 실측).
-    n, avg = _pred_accuracy_aggregates(data)
-    avg_str = f"{avg*100:.1f}%" if avg is not None else "n/a"
-    edge_n = len(data.get("edge_cells") or [])
-    edge_str = (
-        f"; {edge_n} cells with CI-low above baseline (see edge_cells)" if edge_n
-        else "; no cell clears baseline at 95% CI yet"
+    # [2026-10-07 TRUST-001] 기저율을 uniform 33.3% 가 아니라 persistence(meta.primary_baseline)
+    # 와 최빈 결과 기준선으로. 33.3% 대비로 쓰면 자명한 상수 예측(~58%)보다 낮은 셀도 좋아 보였다.
+    a = _forecast_baseline_aggregates(data)
+    if not a["n"]:
+        return "Prediction accuracy — no forecast cells for this filter."
+    pct = lambda v: f"{v * 100:.1f}%" if v is not None else "n/a"  # noqa: E731
+    parts = [
+        f"Prediction accuracy — {a['n']} forecast cells (nowcast excluded): avg hit {pct(a['acc'])} "
+        f"vs avg persistence null {pct(a['pers'])}"
+    ]
+    if a["maj_n"]:
+        parts.append(
+            f"; since the 2026-10-01 label-definition change: avg hit {pct(a['maj_acc'])} vs majority-class baseline {pct(a['maj'])} "
+            f"(always guessing the most common outcome) — {a['beats_maj']}/{a['maj_n']} cells beat it"
+        )
+    parts.append(
+        f"; {a['edge_n']} persistence-skill edge cells"
+        + (f", {a['edge_beats_maj']} of which also beat the majority baseline" if a["maj_n"] else "")
+        + "."
+        + (
+            " Persistence null on these rows is the pre-fix reconstruction and is too weak "
+            "(meta.persistence_null_caveat)."
+            if (data.get("meta") or {}).get("persistence_method")
+            == "reconstructed_from_current_candle_labels" else ""
+        )
     )
-    return (
-        f"Prediction accuracy — {n} cells, avg hit rate {avg_str} "
-        f"vs 33.3% random baseline (3-class){edge_str}"
-    )
+    return "".join(parts)
 
 
 def _user_summary_pred_accuracy(data: dict) -> str:
-    n, avg = _pred_accuracy_aggregates(data)
-    if not n or avg is None:
-        return "예측 정확도 데이터가 아직 충분히 누적되지 않았습니다."
+    a = _forecast_baseline_aggregates(data)
+    if not a["n"]:
+        return "이 조건의 예측(forecast) 정확도 셀이 없습니다."
+    if a["maj_n"] and a["maj"] is not None and a["maj_acc"] is not None:
+        return (
+            f"거시 예측 {a['maj_n']}개 셀의 판정 라벨 전환(10-01) 이후 평균 적중률은 {a['maj_acc'] * 100:.1f}%로, "
+            f"'항상 가장 흔한 결과를 찍는' 기준선 평균 {a['maj'] * 100:.1f}% 대비 "
+            f"{(a['maj_acc'] - a['maj']) * 100:+.1f}%p입니다(기준선을 넘는 셀 {a['beats_maj']}개)."
+        )
     return (
-        f"OneQAZ의 거시 카테고리 예측 정확도는 {n}개 cell 기준 평균 {avg*100:.1f}%입니다 "
-        f"(3지선다 무작위 기준선 33.3% 대비)."
+        f"거시 예측 {a['n']}개 셀 평균 적중률 {a['acc'] * 100:.1f}% — 지속성(persistence) 기준선 "
+        f"평균 {(a['pers'] or 0) * 100:.1f}% 대비이며, 이 기준선은 약하게 측정되고 있습니다."
     )
 
 
@@ -140,28 +225,30 @@ def _user_summary_leaderboard(data: dict) -> str:
 
 
 def _news_lead_aggregates(data: dict):
+    """집계 행 수만 반환. [2026-09-18 Ticket A] lead/accuracy 평균 산출 제거.
+
+    이 tool 의 수치는 방법론 감사(Ticket B) 전까지 성과 주장으로 노출하지 않는다.
+    """
     indicators = data.get("indicators") or data.get("entries") or []
-    if not indicators:
-        return 0, None, None
-    leads = [i.get("avg_lead_time_minutes") for i in indicators if i.get("avg_lead_time_minutes") is not None]
-    accs = [i.get("accuracy_pct") for i in indicators if i.get("accuracy_pct") is not None]
-    avg_lead = sum(leads) / len(leads) if leads else None
-    avg_acc = sum(accs) / len(accs) if accs else None
-    return len(indicators), avg_lead, avg_acc
+    return len(indicators)
 
 
 def _ai_summary_news_lead(data: dict) -> str:
-    n, avg_lead, avg_acc = _news_lead_aggregates(data)
-    lead_str = f"{avg_lead:.1f}min" if avg_lead is not None else "n/a"
-    acc_str = f"{avg_acc*100:.1f}%" if avg_acc is not None and avg_acc <= 1 else (f"{avg_acc:.1f}%" if avg_acc is not None else "n/a")
-    return f"News lead — {n} event types, avg lead {lead_str}, accuracy {acc_str}"
+    # [2026-09-18 Ticket A] 선행 성과 표현 제거. 계산 방법 검증 전이므로
+    # 수치를 요약에 실으면 호출한 AI 가 그대로 성과로 인용한다.
+    n = _news_lead_aggregates(data)
+    # 금지 토큰(anticipatory 등)은 부정문으로도 쓰지 않는다 — 요약만 읽는 LLM 이
+    # 부정을 떼고 주장만 집어가는 사고를 막기 위해 어휘 자체를 배제.
+    return (
+        f"News event groupings — {n} rows, coverage inventory only "
+        "(UNVERIFIED: calculation method under audit; carries no performance claim)"
+    )
 
 
 def _user_summary_news_lead(data: dict) -> str:
-    n, avg_lead, _ = _news_lead_aggregates(data)
-    if not n or avg_lead is None or avg_lead <= 0:
-        return "뉴스 발표 전에 시장 움직임을 감지한 사례가 아직 충분치 않습니다."
-    return f"OneQAZ는 뉴스 발표보다 평균 {avg_lead:.0f}분 먼저 가격 움직임을 감지한 기록이 있습니다."
+    # [2026-09-18 Ticket A] 사람이 읽는 줄에서도 성과 주장 제거.
+    from oneqaz_trading_mcp.verification import NEWS_LEAD_USER_NOTE_KO
+    return NEWS_LEAD_USER_NOTE_KO
 
 
 def _count_macro_relations(data: dict) -> int:
@@ -193,9 +280,14 @@ def _user_summary_explain(data: dict) -> str:
     rec = data.get("overall_recommendation", {}) or {}
     text = rec.get("text") or ""
     if text:
-        first = text.split(".")[0].strip()
-        if first:
-            return first
+        # [2026-10-07 ANS-001] '.' 단순 분할은 "+0.160" 같은 수치에서 문장을 자른다 → 문장 경계로만.
+        # 첫 문장(판정) + 마지막 문장(실행 사실: 보유 중/매수/결정 없음)을 함께 싣는다 —
+        # 판정만 인용되면 '보유 중이라 추매 안 함' 이라는 핵심 사실이 사라진다.
+        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+        if sentences:
+            first = sentences[0]
+            last = sentences[-1] if len(sentences) > 1 else ""
+            return f"{sym}: {first}" + (f" {last}" if last and last != first else "")
     return f"{sym} 종목의 의사결정 근거를 종합 분석한 결과입니다."
 
 
@@ -227,36 +319,66 @@ def _ai_summary_causality(data: dict) -> str:
     bd = data.get("breakdown", {}) or {}
     if isinstance(bd, dict):
         total = sum(v.get("count", 0) if isinstance(v, dict) else 0 for v in bd.values())
-        return f"News causality — {len(bd)} types, total {total} events"
-    return f"News causality — {len(bd)} entries"
+        # [2026-09-18 Ticket A] 분류 건수만. 분류의 타당성 주장은 싣지 않는다.
+        return (
+            f"News causality labels — {len(bd)} buckets, total {total} events "
+            "(UNVERIFIED: label methodology under audit)"
+        )
+    return f"News causality labels — {len(bd)} entries (UNVERIFIED)"
 
 
 def _user_summary_causality(data: dict) -> str:
     bd = data.get("breakdown", {}) or {}
     if not bd:
         return "뉴스 인과 분류 데이터가 아직 충분치 않습니다."
-    return "뉴스 이벤트를 ANTICIPATED / SURPRISE_WITH_PRECURSOR / SURPRISE 3가지로 체계적으로 분류·검증하고 있습니다."
+    # [2026-09-18 Ticket A] "체계적으로 분류·검증" 주장 제거 — 분류 기준 자체가 감사 중.
+    return (
+        "뉴스 이벤트에 anticipated / surprise 라벨을 붙인 집계입니다. "
+        "라벨 산출 방법은 검증 중(UNVERIFIED)이며, 예견 능력의 근거로 사용할 수 없습니다."
+    )
 
 
 def _ai_summary_governance(data: dict) -> str:
     summ = data.get("status_summary", {}) or {}
     feats = data.get("features", []) or []
-    return (
-        f"Feature governance — {len(feats)} feats; "
+    # [2026-09-22] len(feats) 는 **반환된 페이지 크기**지 적재 총량이 아니다.
+    # limit 도입 후 이걸 그대로 두면 "531개 중 50개"를 "50개"라고 말하게 된다.
+    total = data.get("total_available", len(feats))
+    out = (
+        f"Feature governance — {total} feats; "
         f"ACTIVE={summ.get('ACTIVE', 0)} CONDITIONAL={summ.get('CONDITIONAL', 0)} "
         f"OBSERVATION={summ.get('OBSERVATION', 0)} DEPRECATED={summ.get('DEPRECATED', 0)}"
     )
+    # [2026-10-14] 동결 몫을 밝힌다 — 위 수에 섞여 있어 그대로 두면 '검증 통과·운영 중' 으로 읽힌다.
+    frozen = ((data.get("meta") or {}).get("frozen_feature_types") or {})
+    if frozen:
+        fa = governance_frozen_status_count(frozen, "ACTIVE")
+        fc = governance_frozen_status_count(frozen, "CONDITIONAL")
+        fz = ", ".join(f"{k} {v.get('rows')}" for k, v in frozen.items())
+        out += (f" | FROZEN legacy (not current): {fz} incl. ACTIVE {fa} · CONDITIONAL {fc}"
+                f" → live ACTIVE={summ.get('ACTIVE', 0) - fa} CONDITIONAL={summ.get('CONDITIONAL', 0) - fc}")
+    return out
 
 
 def _user_summary_governance(data: dict) -> str:
     summ = data.get("status_summary", {}) or {}
-    active = summ.get("ACTIVE", 0)
-    obs = summ.get("OBSERVATION", 0)
+    frozen = ((data.get("meta") or {}).get("frozen_feature_types") or {})
+    # [2026-10-14] 동결된 레거시 행은 '운영 중' 이 아니다 — 상태 수에서 빼고 말한다.
+    frozen_active = governance_frozen_status_count(frozen, "ACTIVE")
+    active = summ.get("ACTIVE", 0) - frozen_active
+    obs = summ.get("OBSERVATION", 0) - governance_frozen_status_count(frozen, "OBSERVATION")
+    frozen_note = (f" (별도로 2026-10-14 동결된 레거시 측정 {sum(int(v.get('rows', 0)) for v in frozen.values())}행 — "
+                   f"측정 정의 무효로 갱신 정지, 현재 값 아님)") if frozen else ""
     if active > 0:
-        return f"OneQAZ는 통계 검증을 통과한 ACTIVE 외부 feature {active}개를 운영 중입니다."
+        return f"OneQAZ는 통계 검증을 통과한 ACTIVE 외부 feature {active}개를 운영 중입니다.{frozen_note}"
+    if frozen_active > 0:
+        return (f"현재 운영 중인 ACTIVE 외부 feature 는 0개입니다. ACTIVE 로 표시된 {frozen_active}개는 "
+                f"2026-10-14 동결된 레거시 측정(정의 무효)이라 현재 값이 아닙니다."
+                + (f" {obs}개는 OBSERVATION 단계에서 검증 중입니다." if obs > 0 else ""))
     if obs > 0:
-        return f"OneQAZ는 {obs}개의 외부 feature를 OBSERVATION 단계에서 통계 검증 중이며, 통과 시 ACTIVE로 승급합니다."
-    return "외부 feature 거버넌스 데이터가 아직 충분치 않습니다."
+        return (f"OneQAZ는 {obs}개의 외부 feature를 OBSERVATION 단계에서 통계 검증 중이며, 통과 시 ACTIVE로 승급합니다."
+                f"{frozen_note}")
+    return "외부 feature 거버넌스 데이터가 아직 충분치 않습니다." + frozen_note
 
 
 def _ai_summary_active_pred(data: dict) -> str:
@@ -289,14 +411,20 @@ def _ai_summary_struct_calib(data: dict) -> str:
     if data.get("error"):
         return f"Structure calibration unavailable: {data.get('reason', '?')[:50]}"
     cells = data.get("calibration", []) or data.get("entries", []) or []
-    return f"Structure calibration — {len(cells)} cells"
+    # [2026-09-22] len(cells) 는 반환된 페이지 크기다. 총량으로 쓰면 안 된다.
+    total = data.get("total_available", len(cells))
+    return f"Structure calibration — {total} cells"
 
 
 def _user_summary_struct_calib(data: dict) -> str:
     if data.get("error"):
         return "Level 2 구조 보정 데이터가 아직 준비되지 않았습니다."
     cells = data.get("calibration", []) or data.get("entries", []) or []
-    return f"섹터/그룹 차원의 구조 예측 보정 데이터 {len(cells)}건이 누적되어 있습니다."
+    # [2026-09-22] 이 문장은 **반환 건수가 아니라 적재 총량에 대한 주장**이다.
+    # limit 도입 후 len(cells) 를 그대로 쓰면 "463건 누적"을 "50건 누적"이라고
+    # 말하게 된다 — 잘못된 값을 무경고로 단정하는 부류(VALID-001).
+    total = data.get("total_available", len(cells))
+    return f"섹터/그룹 차원의 구조 예측 보정 데이터 {total}건이 누적되어 있습니다."
 
 
 def _ai_summary_struct_hist(data: dict) -> str:
@@ -405,6 +533,165 @@ def _wilson_ci_95(p: float, n: int) -> Optional[List[float]]:
         return None
 
 
+# [2026-10-07] market_global 매크로 테이블(macro_prediction_accuracy / macro_regime_predictions /
+# backtest_results / backtest_tuning)의 target_market 값은 coin_market/kr_market/us_market 이다
+# (실측 3시장 전부). 2026-09-22 enum 검증 도입 후 normalize_choice 가 정본값 crypto/kr_stock/
+# us_stock 를 돌려주는데 그 값을 WHERE 에 그대로 넣어, 스키마가 광고하는 값으로 필터하면
+# **조용히 0건**이었다 — get_prediction_accuracy(target_market='crypto') → "데이터 부족" 응답.
+# SQL 직전에만 변환한다 (래퍼·내부 함수가 각각 정규화하므로 변환을 한 곳에 둬야 이중 변환이 없다).
+_MACRO_TARGET_VALUE = {"crypto": "coin_market", "kr_stock": "kr_market", "us_stock": "us_market"}
+
+
+def _macro_target(market: Optional[str]) -> Optional[str]:
+    return _MACRO_TARGET_VALUE.get(market, market) if market else market
+
+
+# [2026-10-07 TRUST-001] 최빈 결과 기준선 — "항상 가장 흔한 실제 결과를 찍는" 자명한 예측기.
+# fold 는 _REGIME_GROUP 과 동일, lag 버킷은 market.global_regime.profiles.lag_bucket_of 와 동일 규칙
+# (MCP 는 market 패키지를 import 하지 않으므로 규칙만 복제 — 바뀌면 같이 바꿀 것).
+# [2026-10-07 후속 — 사용자 승인] 창 = 판정 라벨 정의 전환(legacy → PKL 캔들 라벨) **이후**.
+# 전환 전후로 판정 대상의 분포가 완전히 달라(coin 기록 실제값 neutral 95% → 0%) 섞으면 최빈
+# 기준선 자체가 무의미하다. 이 창의 적중률이 곧 '현 방법론 시대의 적중률' 이며 불변 원장에서
+# 매번 계산하므로 누적 카운터를 따로 두지 않는다(외부에서 get_resolved_predictions 로 재계산 가능).
+# 값은 accuracy_ext.LABEL_DEFINITION_CUTOVER 와 같다 (테스트 test_accuracy_ext 가 동일성 확인).
+LABEL_DEFINITION_CUTOVER = "2026-09-30T15:55:00+00:00"
+_MAJORITY_WINDOW_DAYS = 200  # 상한 (먼 미래 성능 보호 — 실제 창 시작은 max(전환 시각, now-200d))
+
+
+def _lag_bucket(lag_hours: Any) -> str:
+    lh = float(lag_hours)
+    return f"{int(lh)}h" if lh == int(lh) else f"{lh:g}h"
+
+
+def _majority_baselines(cur) -> Dict[Any, Dict[str, Any]]:
+    """(category, target_market, lag_bucket) → {majority_class, majority_class_baseline,
+    accuracy_window, window_n}. 실패 시 {} (경고) — 기존 필드는 그대로 서빙된다."""
+    from collections import Counter, defaultdict
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    cutoff = max(
+        (_dt.now(_tz.utc) - _td(days=_MAJORITY_WINDOW_DAYS)).isoformat(),
+        LABEL_DEFINITION_CUTOVER,
+    )
+    try:
+        rows = cur.execute(
+            """
+            SELECT source_category, target_market, lag_hours,
+                   CASE WHEN actual_regime_shift IN ('extreme_bearish','bearish','sideways_bearish') THEN 'bearish'
+                        WHEN actual_regime_shift IN ('sideways_bullish','bullish','extreme_bullish') THEN 'bullish'
+                        ELSE 'neutral' END AS grp,
+                   COUNT(*) AS k,
+                   SUM(CASE WHEN outcome = 'correct' THEN 1 ELSE 0 END) AS ok
+              FROM market_global.macro_regime_predictions
+             WHERE outcome IS NOT NULL AND resolved_at >= ?
+               AND lifecycle_state_at_creation IS DISTINCT FROM 'DEPRECATED'
+             GROUP BY 1, 2, 3, 4
+            """,
+            (cutoff,),
+        ).fetchall()
+    except Exception as e:
+        logger.warning("get_prediction_accuracy: majority baseline unavailable: %s", e)
+        return {}
+    counts: Dict[Any, Counter] = defaultdict(Counter)
+    oks: Dict[Any, int] = defaultdict(int)
+    for r in rows:
+        try:
+            key = (r["source_category"], r["target_market"], _lag_bucket(r["lag_hours"]))
+        except (TypeError, ValueError):
+            continue
+        counts[key][r["grp"]] += int(r["k"] or 0)
+        oks[key] += int(r["ok"] or 0)
+    out: Dict[Any, Dict[str, Any]] = {}
+    for key, cnt in counts.items():
+        total = sum(cnt.values())
+        if not total:
+            continue
+        grp, k = cnt.most_common(1)[0]
+        out[key] = {
+            "majority_class": grp,
+            "majority_class_baseline": round(k / total, 3),
+            "accuracy_window": round(oks[key] / total, 3),
+            "window_n": total,
+        }
+    return out
+
+
+# [2026-10-07] persistence 기준선 산출 방법 — accuracy_ext.METHODOLOGY 문자열로 판별.
+# live_ledger_stream: 판정기가 기록한 라이브 실제값 흐름(정합). reconstructed: 현재 저장 캔들
+# 라벨 재구성 — 10-01 PKL 전 이력 덮어쓰기 이후 실제값과 정의가 달라 붕괴(0.12~0.35).
+_PERSISTENCE_CAVEAT = {
+    "live_ledger_stream": (
+        "persistence_accuracy uses the target market's live-recorded regime at prediction "
+        "creation (the validator's own record from the same cycle), so the null and the outcome "
+        "share one label version. Corrected 2026-10-07: until then the null was reconstructed "
+        "from candle labels as currently stored; after the 2026-10-01 full-history relabel "
+        "(legacy -> PKL candle regime labels) that reconstruction matched recorded outcomes only "
+        "1-7% of the time and collapsed to 0.12-0.35, overstating skill (8 'edge' cells -> 1 "
+        "after correction). Outcomes before 2026-10-01 00:55 KST are judged against legacy "
+        "labels (coin's market-mode target was ~always 'neutral' from 2026-07-06 to 09-29), "
+        "after it against PKL labels. Judge v3 (2026-10-07) replaced the closed-market fallback "
+        "(a single arbitrary latest candle — ~3/4 of kr/us judgments) with the trailing-2h mode "
+        "anchored at the latest candle; the null is compared only within one judge version. "
+        "Public metrics exclude shadow predictions (made by deprecated cells for re-evaluation); "
+        "lifecycle (deprecation/recovery) is judged on the post-change, judge-v3 cohort."
+    ),
+    "reconstructed_from_current_candle_labels": (
+        "Self-audit 2026-10-07: these persistence_accuracy values were reconstructed from the "
+        "candle regime labels as currently stored, while outcomes were recorded from live labels "
+        "at resolution time. After the 2026-10-01 full-history relabel (legacy -> PKL) the two "
+        "matched only 1-7% of the time and the null collapsed to 0.12-0.35, so skill_score / "
+        "edge_cells are overstated (a consistent live-ledger null leaves 1 edge cell, not 8). "
+        "A corrected batch is pending an engine restart — until then read edge_cells together "
+        "with beats_majority_baseline."
+    ),
+    "unknown": "persistence method could not be determined (accuracy_ext rows unavailable).",
+}
+
+# [2026-10-14 H8-1] get_prediction_accuracy 셀 accuracy·samples 재계산 레시피 (Mac 요청서 rev.3).
+#   정본 = ai_brain/07_mcp_llm_api/spec_mcp_payload_contract.md §6. 정의를 바꾸면 버전을 올린다.
+#   admin LEARNING_OUTPUTS `engine_invariant.e4_counter_equals_ledger` 가 같은 정의로 상시 대조한다.
+ACCURACY_RECIPE_VERSION = "v2"
+ACCURACY_RECIPE = (
+    "recipe v2 — cell = (source_category, target_market, lag_bucket). Input = every row of "
+    "get_resolved_predictions(status='resolved'). Keep rows with outcome in {correct, incorrect} and "
+    "lifecycle_state_at_creation != 'DEPRECATED' (null = public). Bucket = '<int>h' when lag_hours is an "
+    "integer, else '<lag_hours, %g>h' (e.g. '0.5h'). Do NOT filter by judge_version (cumulative cells mix "
+    "methodology eras). Count rows with resolved_at <= the cell's last_updated: samples = n, "
+    "accuracy = round(correct / n, 3). If read mid-cycle, rows with resolved_at == last_updated may be "
+    "partially applied: accept n within [count(resolved_at < last_updated), count(resolved_at <= last_updated)] "
+    "and likewise for correct. Cells are served only when sample_count >= 3."
+)
+ACCURACY_COUNTER_CORRECTIONS = [
+    {
+        "at": "2026-10-14",
+        "what": (
+            "One-time correction of the cumulative counters to the ledger (recipe v2). (1) 2026-04-20/21: "
+            "for ~21h after the cumulative columns were introduced, the old process advanced sample_count "
+            "only — 317 resolved predictions were missing from samples/correct (15 cells -21, forex "
+            "coin/us -1). (2) Before the 2026-07-20 lag-bucket fix, vix->us lag 0.5h predictions were "
+            "folded into the '0h' cell (179 rows, 91 correct) — they were moved to '0.5h'."
+        ),
+        "effect": (
+            "accuracy changed by <= 0.5 percentage points in the 16 cells of (1); vix->us '0.5h' "
+            "0.728 -> 0.697 and '0h' 0.275 -> 0.245 (both previously overstated by 3.0 points). "
+            "Daily per-cell snapshots show a step on 2026-10-14. accuracy_ema was not changed."
+        ),
+        "recipe_before": (
+            "recipe v1 = v2 plus two exceptions: fold fractional lags resolved before 2026-07-20T18:00:00Z "
+            "into the integer bucket, and drop rows resolved in [2026-04-20T03:00:00Z, 2026-04-21T00:30:00Z)."
+        ),
+    }
+]
+
+
+def _persistence_method(ext_map: Dict[Any, Dict[str, Any]]) -> str:
+    methods = {str(e.get("methodology") or "") for e in ext_map.values()}
+    if not methods:
+        return "unknown"
+    if all("live-recorded" in m for m in methods):
+        return "live_ledger_stream"
+    return "reconstructed_from_current_candle_labels"
+
+
 def _get_prediction_accuracy(
     category: Optional[str] = None,
     target_market: Optional[str] = None,
@@ -416,6 +703,13 @@ def _get_prediction_accuracy(
     alpha=0.02 EMA (최근 ~50 sample 가중, drift 감지용). Wilson score 95% CI 는
     cumulative 기준.
     """
+    # [2026-09-22] 열거형 파라미터 검증 — 종전에는 미지 시장값이 WHERE 절에
+    # 그대로 들어가 **조용히 0건**을 냈다. 0건은 "해당 데이터가 없다" 라는
+    # 유효한 답과 구분되지 않아 호출자가 오타를 영영 모른다.
+    target_market, _err = normalize_choice('market', 'target_market', target_market)
+    if _err:
+        return _err
+
     from oneqaz_trading_mcp.shared.db.compat import open_schema_connection
     try:
         conn = open_schema_connection("market_global", readonly=True)
@@ -443,7 +737,7 @@ def _get_prediction_accuracy(
             params.append(category)
         if target_market:
             query += " AND target_market = ?"
-            params.append(target_market)
+            params.append(_macro_target(target_market))
 
         rows = cur.execute(query, params).fetchall()
 
@@ -458,7 +752,7 @@ def _get_prediction_accuracy(
                        n_effective, n_episodes, ci_block_low, ci_block_high,
                        skill_ci_low, skill_ci_high, accuracy_v2_only, samples_v2_only,
                        persistence_v2_only, skill_v2_only, delay_h_median, delay_h_p90,
-                       suggested_lag_hours, lifecycle_state, computed_at
+                       suggested_lag_hours, lifecycle_state, computed_at, methodology
                   FROM market_global.macro_prediction_accuracy_ext
             """).fetchall()
             for e in ext_rows:
@@ -467,6 +761,11 @@ def _get_prediction_accuracy(
             logger.warning(
                 "get_prediction_accuracy: accuracy_ext join unavailable — base fields only"
             )
+        # [2026-10-07] 서빙 중인 ext 행이 어느 persistence 방법으로 계산됐는지 — 엔진 배치
+        # (global_regime 프로세스) 재기동 전후로 갈리므로 문구를 고정하지 않고 행에서 읽는다.
+        persistence_method = _persistence_method(ext_map)
+
+        maj_map = _majority_baselines(cur)
 
         summary: Dict[str, Any] = {}
         total_samples = 0
@@ -561,6 +860,15 @@ def _get_prediction_accuracy(
                     "ext_computed_at": ext.get("computed_at"),
                 })
 
+            # [2026-10-07 TRUST-001] 최빈 결과 기준선 (additive) — 같은 창의 적중률과 비교
+            maj = maj_map.get((src, tgt, lag))
+            if maj:
+                entry["majority_class"] = maj["majority_class"]
+                entry["majority_class_baseline"] = maj["majority_class_baseline"]
+                entry["accuracy_since_label_change"] = maj["accuracy_window"]
+                entry["samples_since_label_change"] = maj["window_n"]
+                entry["beats_majority_baseline"] = maj["accuracy_window"] > maj["majority_class_baseline"]
+
             summary[src][tgt][lag] = entry
             total_samples += entry["samples"]
 
@@ -603,6 +911,11 @@ def _get_prediction_accuracy(
                             "skill_ci_high": skill_ci[1],
                             "n_nominal": entry.get("n_nominal", n),
                             "n_effective": entry.get("n_effective"),
+                            # [2026-10-07 TRUST-001] 더 엄격한 자명 기준선과의 비교 (additive)
+                            "majority_class_baseline": entry.get("majority_class_baseline"),
+                            "accuracy_since_label_change": entry.get("accuracy_since_label_change"),
+                            "samples_since_label_change": entry.get("samples_since_label_change"),
+                            "beats_majority_baseline": entry.get("beats_majority_baseline"),
                         }
                         if skill_ci[0] > 0.0:
                             edge_cells.append(cell)
@@ -677,6 +990,45 @@ def _get_prediction_accuracy(
                 "(docs/rca_20260720)."
             ),
             "edge_criteria_version": edge_criteria_version,
+            # [2026-10-07 TRUST-001] 자체 감사 공개 — persistence 기준선이 약하다는 실측.
+            "majority_class_baseline_note": (
+                "majority_class_baseline = hit rate of always predicting the most frequent recorded "
+                "outcome group for that cell, over the same window as accuracy_since_label_change "
+                "(compare those two, not the all-time `accuracy`). beats_majority_baseline=false means "
+                "the cell does not outperform a constant guess. Shadow predictions are excluded."
+            ),
+            # [2026-10-07 후속] 판정 라벨 정의 전환 — 시대별 적중률 분리
+            "label_definition_change": {
+                "at": LABEL_DEFINITION_CUTOVER,
+                "what": (
+                    "Candle regime labels (the judging target) switched from the legacy to the PKL "
+                    "causal definition on 2026-10-01 (full-history relabel 00:06-00:47 KST, live from "
+                    "00:55 KST). Outcomes before and after are judged against different label "
+                    "definitions — coin's recorded outcome was 'neutral' ~95% of the time before and "
+                    "0% after."
+                ),
+                "fields": (
+                    "accuracy_since_label_change / samples_since_label_change / majority_class_baseline "
+                    "are computed from the immutable ledger for predictions resolved after the change "
+                    "(current-methodology era; small samples early on — read with "
+                    "samples_since_label_change). `accuracy` (cumulative) and accuracy_ema_recent mix "
+                    "both eras."
+                ),
+            },
+            "persistence_method": persistence_method,
+            "persistence_null_caveat": _PERSISTENCE_CAVEAT[persistence_method],
+            # [2026-10-14 H8-1] 서빙 accuracy·samples 를 원장 원행으로 재계산하는 레시피 — get_ledger_integrity 와 같은 형식.
+            #   10-14 카운터 1회 정정(H8-2) 이후 예외 없는 v2 로 25셀 전부 일치(admin E4 프로브가 상시 감시).
+            "verification_recipe": {
+                "version": ACCURACY_RECIPE_VERSION,
+                "recipe": ACCURACY_RECIPE,
+                "applies_to": "per-cell `accuracy` and `samples`",
+                "not_applies_to": (
+                    "n_nominal / accuracy_v2_only / samples_v2_only / skill_* / persistence_* come from a "
+                    "separate daily batch over the last 200 days and use a different definition."
+                ),
+            },
+            "counter_corrections": ACCURACY_COUNTER_CORRECTIONS,
             "changelog_1_1": (
                 "schema_version 1.1 (2026-07-20): added per-cell persistence_accuracy, "
                 "skill_score, skill_ci_95, accuracy_ci_block_95, n_nominal, n_effective, "
@@ -745,6 +1097,12 @@ def _get_backtest_tuning_state(
     target_market: Optional[str] = None,
 ) -> Dict[str, Any]:
     """market_global.backtest_tuning PG 쿼리 — 자기 보정 상태."""
+    # [2026-09-22] 열거형 파라미터 검증 — 미지 시장값이 조용히 통과해
+    # 필터가 무시되거나 0건이 나왔다 (오타와 실제 공백이 구분 불가).
+    target_market, _err = normalize_choice('market', 'target_market', target_market)
+    if _err:
+        return _err
+
     from oneqaz_trading_mcp.shared.db.compat import open_schema_connection
     try:
         conn = open_schema_connection("market_global", readonly=True)
@@ -768,7 +1126,7 @@ def _get_backtest_tuning_state(
             params.append(category)
         if target_market:
             query += " AND target_market = ?"
-            params.append(target_market)
+            params.append(_macro_target(target_market))
         query += " ORDER BY last_backtest DESC NULLS LAST"
 
         rows = cur.execute(query, params).fetchall()
@@ -866,6 +1224,13 @@ def _get_monthly_accuracy_trend(
     AI 소비자에게 data_collection_started, months_available 명시로 "단기 관측"
     투명성 제공.
     """
+    # [2026-09-22] 열거형 파라미터 검증 — 종전에는 미지 시장값이 WHERE 절에
+    # 그대로 들어가 **조용히 0건**을 냈다. 0건은 "해당 데이터가 없다" 라는
+    # 유효한 답과 구분되지 않아 호출자가 오타를 영영 모른다.
+    target_market, _err = normalize_choice('market', 'target_market', target_market)
+    if _err:
+        return _err
+
     from oneqaz_trading_mcp.shared.db.compat import open_schema_connection
     try:
         conn = open_schema_connection("market_global", readonly=True)
@@ -889,7 +1254,7 @@ def _get_monthly_accuracy_trend(
             params.append(category)
         if target_market:
             query += " AND target_market = ?"
-            params.append(target_market)
+            params.append(_macro_target(target_market))
         query += " ORDER BY month ASC, category ASC, target_market ASC"
 
         rows = cur.execute(query, params).fetchall()
@@ -937,7 +1302,12 @@ def _get_monthly_accuracy_trend(
                     "tracks market regime STICKINESS, not model improvement: verified "
                     "2026-07 that rising monthly accuracy moved in lockstep with the "
                     "persistence baseline (docs/rca_20260720). Judge improvement by "
-                    "skill_score trends in get_prediction_accuracy, not by this series."
+                    "skill_score trends in get_prediction_accuracy, not by this series. "
+                    # [2026-10-07] 판정 라벨 정의 전환 — 시대 경계
+                    "Label-definition change on 2026-10-01 00:55 KST (legacy -> PKL candle "
+                    "regime labels): months up to 2026-09 were judged against legacy labels and "
+                    "are frozen at their last computation; from 2026-10 only post-change "
+                    "resolutions are counted. The two eras are not comparable."
                 ),
                 "interpretation": (
                     "Monthly accuracy evolution. data_collection_started marks when the "
@@ -973,6 +1343,13 @@ def _get_news_leading_indicator_performance(
     전체 시장 집계 반환.
     """
     # market_id 정규화 (None 허용 — 전체 조회)
+    # [2026-09-22] 열거형 파라미터 검증 — 종전에는 미지 시장값이 WHERE 절에
+    # 그대로 들어가 **조용히 0건**을 냈다. 0건은 "해당 데이터가 없다" 라는
+    # 유효한 답과 구분되지 않아 호출자가 오타를 영영 모른다.
+    market_id, _err = normalize_choice('market', 'market_id', market_id)
+    if _err:
+        return _err
+
     mid_normalized = None
     if market_id:
         mid_normalized = {
@@ -1046,7 +1423,13 @@ def _get_news_leading_indicator_performance(
 
             rows = conn.execute(query, params).fetchall()
 
-            indicators = [dict(row) for row in rows]
+            # [2026-09-18 Ticket A] 미검증 수치는 public 응답에서 제거한다.
+            # DB 원본은 그대로 두고 응답 사본에서만 가린다 — admin 진단 경로는
+            # 이 함수를 거치지 않고 테이블을 직접 읽는다.
+            from oneqaz_trading_mcp.verification import NEWS_LEAD_METRIC_FIELDS, strip_metric_fields
+            indicators = strip_metric_fields(
+                [dict(row) for row in rows], NEWS_LEAD_METRIC_FIELDS
+            )
 
             return {
                 "indicators": indicators,
@@ -1057,12 +1440,14 @@ def _get_news_leading_indicator_performance(
                     "min_sample_count": min_sample_count,
                     "source_table": "news/external_context.db::event_leading_scores",
                     "interpretation": (
-                        "leading_score measures how often prices moved BEFORE news publication. "
-                        "avg_lead_time_minutes shows average early detection window (higher = earlier). "
-                        "accuracy_pct is direction accuracy. "
-                        "Key evidence for 'we detect events before they happen'. "
-                        "Pass market_id=None to see cross-market aggregate."
+                        "Row inventory only: which (event_type, news_type) groupings the news "
+                        "pipeline has accumulated, and how many samples each holds. "
+                        "The underlying lead/score metrics are withheld while the calculation "
+                        "method is under audit — they are not evidence of predictive or "
+                        "anticipatory capability. "
+                        "Pass market_id=None to see cross-market groupings."
                     ),
+                    "withheld_fields": list(NEWS_LEAD_METRIC_FIELDS),
                 },
             }
     except Exception as exc:
@@ -1086,6 +1471,13 @@ def _get_news_causality_breakdown(
     market_id 정규화: "crypto", "coin" → "coin_market", "kr" → "kr_market", etc.
     """
     # market_id 정규화
+    # [2026-09-22] 열거형 파라미터 검증 — 종전에는 미지 시장값이 WHERE 절에
+    # 그대로 들어가 **조용히 0건**을 냈다. 0건은 "해당 데이터가 없다" 라는
+    # 유효한 답과 구분되지 않아 호출자가 오타를 영영 모른다.
+    market_id, _err = normalize_choice('market', 'market_id', market_id)
+    if _err:
+        return _err
+
     mid_normalized = {
         "crypto": "coin_market",
         "coin": "coin_market",
@@ -1167,6 +1559,16 @@ def _get_news_causality_breakdown(
 
             total = sum(v["count"] for v in breakdown.values())
 
+            # [2026-09-18 Ticket A] 선행 주장 성분(lead time / anticipation ratio)은
+            # 계산 방법 감사 전까지 public 집계에서 제거.
+            from oneqaz_trading_mcp.verification import (
+                NEWS_CAUSALITY_METRIC_FIELDS,
+                strip_metric_fields_in_mapping,
+            )
+            breakdown = strip_metric_fields_in_mapping(
+                breakdown, NEWS_CAUSALITY_METRIC_FIELDS
+            )
+
             return {
                 "breakdown": breakdown,
                 "meta": {
@@ -1176,11 +1578,13 @@ def _get_news_causality_breakdown(
                     "market_id_original": market_id,
                     "source_table": "news/external_context.db::news_causality_analysis",
                     "interpretation": (
-                        "News type classification distinguishing 'anticipated' (scheduled + pre-move detected) "
-                        "from 'surprise' (unexpected). Each row includes precursor_score measuring "
-                        "pre-event cascade anomaly strength (macro→ETF→stock). Higher anticipation_ratio + "
-                        "positive lead_time_minutes = stronger evidence of predictive capability."
+                        "Counts of news items by the pipeline's internal label: 'anticipated' "
+                        "(matched to a scheduled/calendar event) vs 'surprise' (no such match). "
+                        "These are pipeline labels, not validated classifications — the labelling "
+                        "rule and the lead/anticipation metrics behind it are under audit and are "
+                        "withheld from this response."
                     ),
+                    "withheld_fields": list(NEWS_CAUSALITY_METRIC_FIELDS),
                 },
             }
     except Exception as exc:
@@ -1192,9 +1596,60 @@ def _get_news_causality_breakdown(
 # P0 Tool 6: get_feature_governance_state — Layer C (거버넌스 투명성)
 # ---------------------------------------------------------------------------
 
+# [2026-10-14] 레거시 측정 동결 표기 (Mac 제안 · 사용자 승인). 동결 대상 목록·해제 env 의 정본은
+# agent_history/core/feature_promoter.py `_frozen_types()`(env NEWS_FEATURE_LEGACY_FREEZE, 기본 동결) — 여기서 다시 정의하지 않는다.
+# ⚠️ env 는 이 프로세스(mcp 컨테이너) 것을 읽는다 — 해제할 때는 intel 과 mcp 양쪽에 같은 값을 줄 것.
+# 동결 전엔 응답이 멈춘 행을 현재 값처럼 내줘 외부 AI 가 그대로 인용하거나 stale 로 오지적할 수 있었다.
+GOVERNANCE_FROZEN_REASON = (
+    "Legacy measurement frozen on 2026-10-14: its definition was found invalid ('news direction' was the sign "
+    "of the market-wide signal score on the first bar after the news, so every news item in a bar shared one "
+    "value, and the sample window was misaligned). Status and counts no longer update — do not read them as "
+    "current. A redefined measurement runs in shadow and is not exposed."
+)
+
+
+def governance_frozen_types() -> tuple:
+    """현재 동결된 feature_type 목록 (정본 = feature_promoter._frozen_types)."""
+    from oneqaz_trading_mcp.agent_history.core.feature_promoter import _frozen_types
+
+    return tuple(_frozen_types())
+
+
+def governance_frozen_summary(rows: List[Dict[str, Any]], frozen_types: tuple) -> Dict[str, Any]:
+    """{feature_type: {rows, values_as_of, reason}} — values_as_of = 그 행들의 마지막 실제 평가 시각(max last_evaluated_at)."""
+    out: Dict[str, Any] = {}
+    for ft in frozen_types:
+        sel = [r for r in rows if r.get("feature_type") == ft]
+        if not sel:
+            continue
+        stamps = [
+            v.isoformat() if hasattr(v, "isoformat") else str(v)       # 두 tool 이 같은 ISO 형식을 내도록
+            for v in (r.get("last_evaluated_at") for r in sel) if v
+        ]
+        by_status: Dict[str, int] = {}
+        for r in sel:
+            if "status" in r:
+                st = r.get("status") or "UNKNOWN"
+                by_status[st] = by_status.get(st, 0) + 1
+        out[ft] = {
+            "rows": len(sel),
+            # 상태별 — 집계(status_summary·by_status)에 섞인 동결 몫을 빼서 '현재 운영' 수를 말하기 위해
+            "by_status": by_status,
+            "values_as_of": max(stamps) if stamps else None,
+            "reason": GOVERNANCE_FROZEN_REASON,
+        }
+    return out
+
+
+def governance_frozen_status_count(frozen_summary: Dict[str, Any], status: str) -> int:
+    """동결 피처 중 해당 상태의 행 수 합계."""
+    return sum(int((v.get("by_status") or {}).get(status, 0)) for v in (frozen_summary or {}).values())
+
+
 def _get_feature_governance_state(
     market_id: Optional[str] = None,
     status_filter: Optional[str] = None,
+    limit: Optional[int] = None,
 ) -> Dict[str, Any]:
     """agent_history PG 스키마 feature_governance 테이블 조회.
 
@@ -1204,6 +1659,19 @@ def _get_feature_governance_state(
     meta 에 "global pool" 임을 명시한다.
     """
     from oneqaz_trading_mcp.shared.db.compat import open_schema_connection
+
+    # [2026-09-22] market_id 는 이 tool 에서 필터로 쓰이지 않지만(global pool),
+    # meta.market_id_requested 로 되울려주므로 미지값을 그대로 받으면 "받아들여진
+    # 필터" 처럼 보인다. 스키마에 enum 을 광고한 이상 서버가 지켜야 한다.
+    market_id, _err = normalize_choice("market", "market_id", market_id)
+    if _err:
+        return _err
+
+    # [2026-09-22] status_filter='YOLO' 가 WHERE status=? 에 그대로 들어가
+    # 조용히 0건을 냈다 — "그런 상태의 feature 가 없다" 와 구분 불가였다.
+    status_filter, _err = normalize_choice("governance_status", "status_filter", status_filter)
+    if _err:
+        return _err
 
     try:
         conn = open_schema_connection("agent_history", readonly=True)
@@ -1238,6 +1706,12 @@ def _get_feature_governance_state(
                 v = f.get(k)
                 if v is not None and hasattr(v, "isoformat"):
                     f[k] = v.isoformat()
+
+        # [2026-10-14] 동결 표기 — 행마다 frozen(불리언, 전 행) + meta.frozen_feature_types(사유·마지막 실제 평가 시각)
+        frozen_types = governance_frozen_types()
+        for f in features:
+            f["frozen"] = f.get("feature_type") in frozen_types
+        frozen_summary = governance_frozen_summary(features, frozen_types)
 
         # 상태별 카운트
         status_counts: Dict[str, int] = {}
@@ -1287,10 +1761,35 @@ def _get_feature_governance_state(
                 f"This is expected for newly registered features — check back "
                 f"after more backtest cycles complete."
             )
+        if frozen_summary:
+            _fz = ", ".join(f"{ft} ({v['rows']} rows, values as of {v['values_as_of']})"
+                            for ft, v in frozen_summary.items())
+            _fa = governance_frozen_status_count(frozen_summary, "ACTIVE")
+            _fc = governance_frozen_status_count(frozen_summary, "CONDITIONAL")
+            interp += (
+                f" FROZEN: {_fz} — legacy measurement with an invalid definition; their status and counts are "
+                f"included above but no longer update (see meta.frozen_feature_types). Excluding them, live "
+                f"ACTIVE = {active_n - _fa} and live CONDITIONAL = {conditional_n - _fc}."
+            )
 
-        return {
-            "features": features,
+        # [2026-09-22] 자르기는 **집계가 전부 끝난 뒤**에 한다. status_summary /
+        # interp / meta 카운트는 전체 531행 기준이어야 하고, 페이지 기준으로
+        # 계산하면 "ACTIVE=0" 같은 거짓 진술이 나온다.
+        eff_limit = clamp_limit(limit, _GOV_LIMIT_DEFAULT, _GOV_LIMIT_MAX)
+        features_page = features[:eff_limit]
+        common = hoist_constant_fields(features_page, _GOV_HOISTABLE_FIELDS)
+        trunc = truncation_fields(
+            returned=len(features_page),
+            total=len(features),
+            limit=eff_limit,
+            maximum=_GOV_LIMIT_MAX,
+            hint="status_filter 로 범위를 좁히세요 (status_summary 는 전체 기준입니다).",
+        )
+
+        out: Dict[str, Any] = {
+            "features": features_page,
             "status_summary": status_counts,
+            **trunc,
             "meta": {
                 "total_features": len(features),
                 "evaluated_count": evaluated,
@@ -1306,6 +1805,8 @@ def _get_feature_governance_state(
                 "scope": "global pool (market_id not discriminated at storage)",
                 "market_id_requested": market_id,
                 "source_table": "agent_history.feature_governance (PG)",
+                # [2026-10-14] 동결 피처 — 행의 frozen=true 와 짝. 비어 있으면 동결 없음.
+                "frozen_feature_types": frozen_summary,
                 "interpretation": interp,
                 "lifecycle_rules": (
                     "OBSERVATION → (CONDITIONAL|ACTIVE) requires delta_accuracy>0, "
@@ -1315,6 +1816,13 @@ def _get_feature_governance_state(
                 ),
             },
         }
+        if common:
+            out["common"] = common
+            out["common_note"] = (
+                "common 의 값은 features 의 모든 행에 적용됩니다(행에서는 생략). "
+                "행에 같은 키가 있으면 행 값이 우선합니다."
+            )
+        return out
     except Exception as exc:
         logger.exception("get_feature_governance_state failed")
         return mcp_error(MCPErrorCode.INTERNAL_ERROR, f"Query failed: {exc}")
@@ -1329,9 +1837,77 @@ def _get_feature_governance_state(
 # P1 Tool 7: get_structure_calibration — Layer D (섹터/바스켓 적중률)
 # ---------------------------------------------------------------------------
 
+_STRUCT_SCHEMA_BY_NORM = {
+    "crypto": "market_coin_struct",
+    "kr_stock": "market_kr_struct",
+    "us_stock": "market_us_struct",
+}
+# 검증 지평 수리(STRUCT-VALIDATION r3) 이전 구간은 1w/1M 이 2일 지평으로 판정돼
+# 수익률이 정확히 0.000(중립 오판) — 기준선 계산에서 제외한다.
+_STRUCT_BASELINE_FLOOR_TS = 1785196800.0  # 2026-07-26 UTC
+
+
+def _structure_skill_baseline(mid_norm: Optional[str]) -> Dict[str, Any]:
+    """[2026-09-18 P1] 시장별 (모델 적중률, 다수클래스 기준선, 스킬) — 해석용 동봉.
+
+    hit_rate_ema 만 주면 3-class 기준선(38~53%)과 대조할 수 없어 과신을 부른다.
+    NaN 채점분과 지평 수리 이전 구간은 제외 — 둘 다 'neutral' 로 둔갑해 성적을 부풀린다.
+    """
+    from oneqaz_trading_mcp.shared.db.compat import open_schema_connection
+
+    targets = ([mid_norm] if mid_norm else list(_STRUCT_SCHEMA_BY_NORM))
+    out: Dict[str, Any] = {
+        "metric": "majority_class_baseline",
+        "note": (
+            "skill_pp = accuracy - majority_class_baseline. Excludes NaN-scored rows and "
+            "pre-2026-07-26 rows (2-day horizon mis-labeled as neutral). "
+            "Negative skill_pp means the model is worse than always predicting the most "
+            "common outcome."
+        ),
+        "by_market": {},
+    }
+    for norm in targets:
+        schema = _STRUCT_SCHEMA_BY_NORM.get(norm)
+        if not schema:
+            continue
+        try:
+            with open_schema_connection(schema, readonly=True) as conn:
+                row = conn.cursor().execute(
+                    # 지평 컷오프는 **1w/1M 에만** 적용한다. 2일 지평 오판은 그 두
+                    # 인터벌만의 문제였고(1d 는 0-수익률 오염 0.0~0.1%), 1d 까지 잘라내면
+                    # 표본이 3~4배 줄어 기준선 추정이 불필요하게 흔들린다.
+                    f"WITH v AS (SELECT actual_direction, is_correct "
+                    f"             FROM {schema}.structure_predictions "
+                    f"            WHERE is_correct IS NOT NULL "
+                    f"              AND actual_avg_return::text <> 'NaN' "
+                    f"              AND (\"interval\" = '1d' "
+                    f"                   OR prediction_ts >= {_STRUCT_BASELINE_FLOOR_TS}) ), "
+                    f"     b AS (SELECT COUNT(*) n FROM v GROUP BY actual_direction) "
+                    f"SELECT (SELECT COUNT(*) FROM v) AS n, "
+                    f"       (SELECT AVG(is_correct::float) FROM v) AS acc, "
+                    f"       (SELECT MAX(n)::float / NULLIF((SELECT COUNT(*) FROM v),0) FROM b) AS base"
+                ).fetchone()
+            d = dict(row) if row is not None and not isinstance(row, dict) else (row or {})
+            n = int(d.get("n") or 0)
+            if n <= 0:
+                continue
+            acc = float(d.get("acc") or 0.0)
+            base = float(d.get("base") or 0.0)
+            out["by_market"][norm] = {
+                "n": n,
+                "accuracy": round(acc, 4),
+                "majority_class_baseline": round(base, 4),
+                "skill_pp": round((acc - base) * 100, 2),
+            }
+        except Exception:  # noqa: BLE001
+            logger.warning("structure baseline 계산 실패 (schema=%s)", schema)
+    return out
+
+
 def _get_structure_calibration(
     market_id: Optional[str] = None,
     group_name: Optional[str] = None,
+    limit: Optional[int] = None,
 ) -> Dict[str, Any]:
     """structure_calibration 테이블에서 섹터/바스켓 예측 적중률 집계."""
     if not STRUCTURE_LEARNING_DB.exists():
@@ -1340,6 +1916,13 @@ def _get_structure_calibration(
             f"structure_learning.db not found at {STRUCTURE_LEARNING_DB}",
         )
 
+    # [2026-09-22] 구조 tool 2종만 market_id 미지값에 에러를 내지 않았다 —
+    # _normalize_market_id_for_structure 가 알 수 없는 값을 그대로 통과시켜
+    # WHERE market_id=? 가 0건을 냈다. 다른 tool 은 스키마 맵 조회에서 이미
+    # INVALID_MARKET 을 낸다.
+    market_id, _err = normalize_choice("market", "market_id", market_id)
+    if _err:
+        return _err
     mid_norm = _normalize_market_id_for_structure(market_id) if market_id else None
 
     try:
@@ -1370,7 +1953,11 @@ def _get_structure_calibration(
             if group_name:
                 query += " AND group_name = ?"
                 params.append(group_name)
-            query += " ORDER BY hit_rate_ema DESC, sample_count DESC"
+            # [2026-09-18 P1] 정렬 반전: hit_rate_ema DESC 는 **n=1 짜리 1.000 셀을
+            # 목록 맨 위**에 올렸다 (실측: us 상위가 1.0/0.954/0.948… 이고 1위는 n=1).
+            # 응답을 앞에서 잘라 읽는 클라이언트는 "섹터 예측 90~100% 적중" 으로 오독한다.
+            # 표본 많은 셀을 먼저 — 적중률로 줄 세우지 않는다.
+            query += " ORDER BY sample_count DESC, hit_rate_ema DESC"
 
             rows = conn.execute(query, params).fetchall()
 
@@ -1388,21 +1975,55 @@ def _get_structure_calibration(
                 for row in rows
             ]
 
+            # [2026-09-22] total_samples 는 **자르기 전 전체 기준**이다.
+            # 페이지 기준으로 재면 "누적 표본" 이라는 말 자체가 거짓이 된다.
             total_samples = sum(c["sample_count"] for c in calibration)
 
+            # 자르기는 집계·baseline 이 끝난 뒤. baseline 은 해석의 기준선이므로
+            # 절대 표본(페이지) 기준으로 계산하지 않는다.
+            eff_limit = clamp_limit(limit, _CALIB_LIMIT_DEFAULT, _CALIB_LIMIT_MAX)
+            calibration_page = calibration[:eff_limit]
+            # ⚠️ hoist 하지 않는다 (_CALIB_HOISTABLE_FIELDS = ()).
+            # market_id/interval/regime_bucket 은 행 식별 차원키라, 필터 호출로
+            # d=1 이 됐다고 common 으로 올리면 행만 읽는 소비자가 어느 시장·어느
+            # 인터벌 얘긴지 모른 채 hit_rate 를 인용한다.
+            trunc = truncation_fields(
+                returned=len(calibration_page),
+                total=len(calibration),
+                limit=eff_limit,
+                maximum=_CALIB_LIMIT_MAX,
+                hint="market_id / group_name 으로 범위를 좁히세요 (baseline 과 meta 는 전체 기준입니다).",
+            )
+
             return {
-                "calibration": calibration,
+                "calibration": calibration_page,
+                **trunc,
+                # [2026-09-18 P1] 기준선 동봉 — 이게 없으면 hit_rate_ema 는 해석 불가다.
+                # 3-class 예측이라 "다수 클래스만 찍기" 기준선이 38~53% 인데 종전 응답은
+                # 절대 적중률만 줬다. macro 쪽 get_prediction_accuracy 는 2026-08-18 에
+                # 같은 함정을 이미 수리했고(persistence 기준선 + skill), 구조 쪽만 남아 있었다.
+                "baseline": _structure_skill_baseline(mid_norm),
                 "meta": {
                     "total_entries": len(calibration),
                     "total_samples": total_samples,
                     "market_id": mid_norm,
                     "group_name_filter": group_name,
                     "source_table": "structure_learning.db::structure_calibration",
+                    "sort": "sample_count DESC (NOT hit_rate — high-rate rows are often n=1)",
+                    "pagination": (
+                        "calibration[] is a page; total_available is the whole-set count. "
+                        "baseline, total_entries and total_samples are whole-set."
+                    ),
                     "interpretation": (
                         "Level 2 (ETF/basket/sector) prediction calibration. Each row shows "
                         "hit_rate_ema (EMA hit rate) per (market, group, interval, regime_bucket). "
                         "avg_return_ema is exponentially-weighted average return. "
-                        "Key evidence: we predict sector rotations and measure actual outcomes."
+                        "CAUTION: hit_rate_ema alone is NOT evidence of edge. This is a 3-class "
+                        "problem whose majority-class baseline is ~38-53%; judge against "
+                        "`baseline.skill_pp` (accuracy minus majority-class baseline), not the "
+                        "raw rate. Many cells have sample_count 1-5, where hit_rate_ema is 0 or 1 "
+                        "by construction. As of 2026-09-18 the measured skill is NEGATIVE in all "
+                        "three markets (see baseline)."
                     ),
                 },
             }
@@ -1426,6 +2047,13 @@ def _get_structure_validation_history(
             f"structure_learning.db not found at {STRUCTURE_LEARNING_DB}",
         )
 
+    # [2026-09-22] 구조 tool 2종만 market_id 미지값에 에러를 내지 않았다 —
+    # _normalize_market_id_for_structure 가 알 수 없는 값을 그대로 통과시켜
+    # WHERE market_id=? 가 0건을 냈다. 다른 tool 은 스키마 맵 조회에서 이미
+    # INVALID_MARKET 을 낸다.
+    market_id, _err = normalize_choice("market", "market_id", market_id)
+    if _err:
+        return _err
     mid_norm = _normalize_market_id_for_structure(market_id) if market_id else None
 
     try:
@@ -1460,6 +2088,13 @@ def _get_structure_validation_history(
 
             rows = conn.execute(query, params).fetchall()
 
+            # [2026-10-13 E2] 검증 0건인 날은 적중률·평균수익이 **없다(null)** — 종전 _safe_float 가
+            #   NULL·0.0 을 0.0 으로 내보내 '전부 틀림' 으로 읽혔다(DB 에 0.0 으로 박힌 구행 39개도 여기서 가린다).
+            def _rate(row: Any, col: str, nd: int) -> Optional[float]:
+                if _safe_int(row["total_validated"]) <= 0 or row[col] is None:
+                    return None
+                return round(_safe_float(row[col]), nd)
+
             history = [
                 {
                     "market_id": row["market_id"],
@@ -1467,19 +2102,22 @@ def _get_structure_validation_history(
                     "total_predictions": _safe_int(row["total_predictions"]),
                     "total_validated": _safe_int(row["total_validated"]),
                     "total_correct": _safe_int(row["total_correct"]),
-                    "hit_rate": round(_safe_float(row["hit_rate"]), 3),
-                    "avg_return": round(_safe_float(row["avg_return"]), 4),
+                    "hit_rate": _rate(row, "hit_rate", 3),
+                    "avg_return": _rate(row, "avg_return", 4),
                 }
                 for row in rows
             ]
 
             # 집계 통계 (overall 트렌드)
+            # [2026-10-13] 분모 = **검증된** 예측. 종전 분모(total_predictions)는 아직 판정 안 된 예측을
+            #   실패로 셌다(coin 30일 실측: 0.236 → 검증 기준 0.283).
             total_predictions_all = sum(h["total_predictions"] for h in history)
+            total_validated_all = sum(h["total_validated"] for h in history)
             total_correct_all = sum(h["total_correct"] for h in history)
             overall_hit_rate = (
-                round(total_correct_all / total_predictions_all, 3)
-                if total_predictions_all > 0
-                else 0.0
+                round(total_correct_all / total_validated_all, 3)
+                if total_validated_all > 0
+                else None
             )
 
             return {
@@ -1487,8 +2125,16 @@ def _get_structure_validation_history(
                 "summary": {
                     "window_days": days,
                     "total_predictions": total_predictions_all,
+                    "total_validated": total_validated_all,
                     "total_correct": total_correct_all,
                     "overall_hit_rate": overall_hit_rate,
+                    "overall_hit_rate_basis": "sum(total_correct) / sum(total_validated) over daily rows",
+                    "counting_note": (
+                        "Each daily row is a trailing-30-day aggregate written once a day, so the "
+                        "summary sums overlapping windows: totals are a weighting, not counts of "
+                        "distinct predictions. hit_rate/avg_return are null on days with 0 validated "
+                        "predictions (no sample — not a 0% hit rate)."
+                    ),
                 },
                 "meta": {
                     "total_days": len(history),
@@ -1629,7 +2275,7 @@ def _get_strategy_leaderboard(
                 "trades_count",
                 "quality_grade",
                 "league",
-                "direction_accuracy",
+                # [2026-09-22] direction_accuracy 제거 — 동어반복(항상 1.0).
                 "volatility_accuracy",
                 "description",
                 "created_at",
@@ -1757,6 +2403,12 @@ def _get_active_predictions(
     limit: int = 20,
 ) -> Dict[str, Any]:
     """macro_regime_predictions 테이블에서 검증 대기 중인 (outcome IS NULL) 예측 조회."""
+    # [2026-09-22] 열거형 파라미터 검증 — 미지 시장값이 조용히 통과해
+    # 필터가 무시되거나 0건이 나왔다 (오타와 실제 공백이 구분 불가).
+    target_market, _err = normalize_choice('market', 'target_market', target_market)
+    if _err:
+        return _err
+
     if not GLOBAL_PREDICTIONS_DB.exists():
         return mcp_error(
             MCPErrorCode.DB_NOT_FOUND,
@@ -1783,11 +2435,12 @@ def _get_active_predictions(
                        predicted_regime_shift, lag_hours, confidence, created_at
                 FROM macro_regime_predictions
                 WHERE outcome IS NULL
+                  AND lifecycle_state_at_creation IS DISTINCT FROM 'DEPRECATED'  -- [2026-10-07] 섀도우 제외
             """
             params: List[Any] = []
             if target_market:
                 query += " AND target_market = ?"
-                params.append(target_market)
+                params.append(_macro_target(target_market))
             query += " ORDER BY created_at DESC LIMIT ?"
             params.append(limit)
 
@@ -1841,7 +2494,15 @@ def _get_macro_influence_map(
     import 회귀 시 낡은 인과 가설을 신선한 것처럼 서빙하게 된다 (겉보기 신선함
     병소). import 실패는 에러로 드러낸다.
     """
-    source_label = "market/global_regime/profiles.py::_MACRO_INFLUENCE_MAP (live)"
+    # [2026-09-22] 열거형 파라미터 검증 — 종전에는 미지 시장값이 WHERE 절에
+    # 그대로 들어가 **조용히 0건**을 냈다. 0건은 "해당 데이터가 없다" 라는
+    # 유효한 답과 구분되지 않아 호출자가 오타를 영영 모른다.
+    market_id, _err = normalize_choice('market', 'market_id', market_id)
+    if _err:
+        return _err
+
+    # [2026-10-05 B4] "(live)" 표기 제거 — 서빙 값은 정적 사전값이다 (아래 interpretation).
+    source_label = "market/global_regime/profiles.py::_MACRO_INFLUENCE_MAP (static prior)"
     try:
         from market.global_regime.profiles import _MACRO_INFLUENCE_MAP
     except Exception as exc:
@@ -1865,8 +2526,36 @@ def _get_macro_influence_map(
             "us_market": "us_market",
         }.get(market_id.lower(), market_id)
 
+    # [2026-10-05 스틸맨 C4 · 백로그 D15 본 처방] 엔진 실효값 병기.
+    #   엔진은 profiles.get_macro_influence() → get_tuned_influence() 로 셀마다 backtest_tuning
+    #   값을 우선 쓴다 (게이트 = sample_count >= MIN_SAMPLES_FOR_TUNING 이고 tuned_lag_hours > 0).
+    #   그 조회는 실패를 except: pass 로 삼켜 "튜닝 없음" 과 구분되지 않으므로 재사용하지 않고,
+    #   같은 게이트(상수는 import — 베끼지 않는다)로 직접 읽되 실패는 숨기지 않는다.
+    effective_status = "ok"
+    tuned: Dict[Any, Any] = {}
+    try:
+        from market.global_regime.learning.historical_backtester import MIN_SAMPLES_FOR_TUNING
+        from oneqaz_trading_mcp.shared.db.compat import open_schema_connection
+        conn = open_schema_connection("market_global", readonly=True)
+        try:
+            for r in conn.execute(
+                "SELECT category, target_market, tuned_lag_hours, tuned_sensitivity, "
+                "confidence, sample_count FROM market_global.backtest_tuning "
+                "WHERE sample_count >= ? AND tuned_lag_hours > 0",
+                (MIN_SAMPLES_FOR_TUNING,),
+            ).fetchall():
+                tuned[(r["category"], r["target_market"])] = r
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.error("macro influence map: tuned-value lookup failed: %s", exc, exc_info=True)
+        effective_status = f"unavailable ({type(exc).__name__})"
+        tuned = {}
+
     # dict 직렬화 (JSON-serializable 보장)
     serialized: Dict[str, Any] = {}
+    n_cells = 0
+    n_tuned = 0
     for category, targets in _MACRO_INFLUENCE_MAP.items():
         if not isinstance(targets, dict):
             continue
@@ -1875,10 +2564,30 @@ def _get_macro_influence_map(
             if target_filter and tgt_market != target_filter:
                 continue
             if isinstance(params, dict):
-                entry[tgt_market] = {
+                cell: Dict[str, Any] = {
                     "lag_hours": _safe_float(params.get("lag_hours")),
                     "sensitivity": _safe_float(params.get("sensitivity")),
                 }
+                n_cells += 1
+                if effective_status != "ok":
+                    cell["effective"] = None
+                elif (category, tgt_market) in tuned:
+                    t = tuned[(category, tgt_market)]
+                    n_tuned += 1
+                    cell["effective"] = {
+                        "lag_hours": _safe_float(t["tuned_lag_hours"]),
+                        "sensitivity": _safe_float(t["tuned_sensitivity"]),
+                        "source": "backtest_tuning",
+                        "sample_count": int(t["sample_count"] or 0),
+                        "confidence": _safe_float(t["confidence"]),
+                    }
+                else:
+                    cell["effective"] = {
+                        "lag_hours": cell["lag_hours"],
+                        "sensitivity": cell["sensitivity"],
+                        "source": "static_prior",
+                    }
+                entry[tgt_market] = cell
         if entry:
             serialized[category] = entry
 
@@ -1888,12 +2597,19 @@ def _get_macro_influence_map(
             "category_count": len(serialized),
             "target_market_filter": target_filter,
             "source": source_label,
+            # [2026-10-05 B4 → 스틸맨 C4] 상위 lag_hours/sensitivity 는 정적 사전값이고, 셀마다
+            # 엔진이 실제로 쓰는 값은 effective 블록이다 (2026-10-05 실측: 24/24 셀이 튜닝값).
+            "values_kind": "static_prior",
+            "effective_status": effective_status,
+            "effective_tuned_cells": f"{n_tuned}/{n_cells}",
             "interpretation": (
                 "Causal hypothesis map: each macro category (bonds, forex, vix, etc.) mapped to "
-                "target market with lag_hours (time to propagate) and sensitivity (strength 0-1). "
-                "This is OneQAZ's pre-defined causal model. It is continuously tuned by "
-                "backtest_tuning table (see get_backtest_tuning_state). Highest transparency "
-                "evidence: our causal reasoning is visible and measurable."
+                "a target market with lag_hours (time to propagate) and sensitivity (strength "
+                "0-1). Top-level lag_hours/sensitivity are OneQAZ's pre-defined STATIC PRIOR "
+                "values. Each cell's `effective` block is what the engine actually uses at "
+                "runtime: the backtest_tuning value whenever the cell passes the tuning gate "
+                "(enough samples and a positive tuned lag), otherwise the static prior. "
+                "meta.effective_tuned_cells shows how many cells are tuned."
             ),
             "related_tools": [
                 "get_backtest_tuning_state (to see runtime calibration)",
@@ -2015,21 +2731,44 @@ def _build_historical_narrative(
     hits = int(pattern.get("hit_count") or 0)
     hit_rate = float(pattern.get("hit_rate") or 0.0)
     avg_p = float(pattern.get("avg_profit_pct") or 0.0)
-    trustable = bool(pattern.get("is_trustable"))
     regime = pattern.get("regime") or "any"
+    # [2026-10-07 NEWS-001] 풀링 범위 명시 — BTC·ETH 가 같은 n=306,852 를 받아 '이 종목의
+    # 과거 적중률' 로 오인됐다. 이 수치는 같은 role/regime/grade/interval 조합의 전 종목 합산이다.
     parts = [
-        f"Past combo (role={role}, regime={regime}, grade={grade}, n={n}): "
+        f"Past combo (role={role}, regime={regime}, grade={grade}, n={n}; pooled across all "
+        f"symbols sharing this combo — not this symbol's own record): "
         f"{hits} hits, hit_rate={hit_rate * 100:.1f}%, avg_profit={avg_p:+.2f}%."
     ]
-    if not trustable:
+    cls = _classify_history(pattern)
+    if cls == "untrusted":
         parts.append("Sample below trust threshold (n<10) — treat as directional only.")
-    elif hit_rate >= 0.6 and avg_p > 0:
+    elif cls == "positive":
         parts.append("Historically positive — supports following the signal.")
-    elif hit_rate < 0.4 or avg_p < 0:
+    elif cls == "weak":
         parts.append("Historically weak — caution warranted.")
     else:
         parts.append("Mixed history — neutral.")
     return " ".join(parts)
+
+
+def _classify_history(pattern: Optional[Dict[str, Any]]) -> str:
+    """explanation_patterns 한 행 → none / untrusted / positive / weak / mixed.
+
+    [2026-10-07 ANS-001] historical_narrative 와 verdict 가 **같은 판정**을 쓰도록 단일화.
+    종전 verdict 는 이 판정을 아예 보지 않아, narrative 가 "Historically weak" 인 NVDA/AAPL
+    에도 STRONG_BUY 를 냈다. 임계는 기존 narrative 값(≥0.6 & >0 / <0.4 or <0) 그대로.
+    """
+    if not pattern:
+        return "none"
+    if not bool(pattern.get("is_trustable")):
+        return "untrusted"
+    hit_rate = float(pattern.get("hit_rate") or 0.0)
+    avg_p = float(pattern.get("avg_profit_pct") or 0.0)
+    if hit_rate >= 0.6 and avg_p > 0:
+        return "positive"
+    if hit_rate < 0.4 or avg_p < 0:
+        return "weak"
+    return "mixed"
 
 
 def _build_news_narrative(news: List[Dict[str, Any]]) -> str:
@@ -2043,78 +2782,178 @@ def _build_news_narrative(news: List[Dict[str, Any]]) -> str:
         for n in news
         if n.get("lead_time_minutes") is not None
     ]
+    # [2026-10-07 NEWS-001] 범위·검증 상태 명시 — 이 5건은 종목 필터 없는 '시장 전체 최신'
+    # 이라 BTC·ETH·NVDA 가 같은 news_id(DART 공시 포함)를 받았다. 뉴스 인과 파이프라인은
+    # get_news_causality_breakdown 에서 스스로 UNVERIFIED 로 표시돼 있다.
+    # [2026-10-13] 시장 범위로는 거른다(news_events.target_markets) — 종목 필터는 여전히 없다.
     parts = [
-        f"Recent news for this market ({len(news)} items): "
-        f"{anticipated} anticipated, {surprise} surprise."
+        f"Market-scoped news context (this market's news scope), not filtered to this symbol "
+        f"({len(news)} latest items): {anticipated} anticipated, {surprise} surprise."
     ]
     if valid_lead:
         avg_lead = sum(valid_lead) / len(valid_lead)
-        parts.append(f"Average pre-event lead time: {avg_lead:.0f} minutes.")
+        parts.append(
+            f"Average pre-event lead time: {avg_lead:.0f} minutes "
+            "(computed per market — the same news id can differ across markets)."
+        )
     else:
-        parts.append("Lead time data not available for these events.")
+        parts.append("Lead time data not available for these events in this market.")
+    parts.append(
+        "The news-causality classification is UNVERIFIED (method under audit) — "
+        "do not cite it as evidence for this symbol; it is not used in overall_recommendation."
+    )
     return " ".join(parts)
+
+
+# [2026-10-07 ANS-001] '강한' 신호 강도 임계 — combined |signal_score| 기준.
+# 실측(2026-10-07, 시장별 최근 combined 4만 행): buy 행 |score| p50 0.13~0.17 · p75 0.20~0.25
+# (coin 0.21 / kr 0.25 / us 0.20). 3시장 공통 p75 하한인 0.20 을 '강함' 으로 둔다.
+# raw confidence 는 0.70~0.74 에 몰려 변별력이 없어 강도 판정에 쓰지 않는다(basis 에만 노출).
+_STRONG_SCORE_ABS = 0.20
+
+
+def _latest_decision(decisions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """최근 결정 1건 요약 (virtual_trade_decisions 는 timestamp DESC 로 읽힌다)."""
+    if not decisions:
+        return {}
+    d = decisions[0] or {}
+    decision = str(d.get("decision") or "").lower()
+    reason = str(d.get("reason") or "")
+    # '이미 보유 중 (추매 불가)' — hold 결정 중 '보유 중이라 추가 매수 안 함' 을 구분한다.
+    holding = decision == "hold" and ("보유" in reason or "holding" in reason.lower())
+    return {
+        "decision": decision or None,
+        "reason": reason or None,
+        "timestamp": d.get("timestamp"),
+        "already_holding": holding,
+    }
 
 
 def _build_overall_recommendation(
     signal: Dict[str, Any],
     decisions: List[Dict[str, Any]],
     news: List[Dict[str, Any]],
+    historical_pattern: Optional[Dict[str, Any]] = None,
+    market_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """3개 데이터를 결합해서 사용자 친화 권장 verdict 생성.
+    """신호·결정·과거 결과를 결합한 verdict.
 
-    Verdict 카테고리:
-        STRONG_BUY     — buy signal + executed trades
-        WEAK_BUY       — buy signal but no execution (suspicious)
-        STRONG_SELL    — sell signal + executed trades
-        WEAK_SELL      — sell signal but no execution
-        WAIT_SIDEWAYS  — hold signal, sideways
-        WAIT_NEWS      — hold signal but recent surprise news (정보 부족)
-        UNCLEAR        — 데이터 부족
+    [2026-10-07 ANS-001] 종전 판정은 `action=='buy' and len(decisions)>0` 이면 STRONG_BUY 였다.
+    decision 값을 보지 않아 '이미 보유 중 (추매 불가)' hold 결정만 있어도 "The system is actively
+    buying — high conviction" 을 냈고(ETH/NVDA/AAPL 실호출), historical 이 weak(39.6%, −0.34%)
+    여도 STRONG 이었다. meta.interpretation 이 이 verdict 를 그대로 인용하라고 안내하므로
+    면책 문구가 붙어도 사실이 아닌 문장이 사용자에게 닿았다.
+
+    규칙:
+      - STRONG_{BUY,SELL} = 방향 신호 + |score| ≥ _STRONG_SCORE_ABS + historical 'positive'
+        (같은 판정 함수 _classify_history — narrative 와 verdict 가 갈리지 않는다).
+        그 외 방향 신호는 WEAK_{BUY,SELL} 이며 text 가 어느 다리가 비었는지 말한다.
+      - "buying/selling" 같은 실행 서술은 최근 결정이 실제로 buy/sell 일 때만 쓴다.
+        보유 중 hold 는 사실대로 "Already holding — no additional buy".
+      - 뉴스는 verdict 에 쓰지 않는다 — 종목 필터 없는 시장 전체 뉴스이고 파이프라인이
+        UNVERIFIED 다(NEWS-001). 종전 WAIT_NEWS 분기는 이 뉴스가 결정했다 → WAIT_SIDEWAYS 로 흡수.
+      - basis 에 판정 입력을 전부 싣는다 — 외부 검증자가 같은 모순을 자동 검출할 수 있게.
     """
-    sig_action = ((signal or {}).get("action") or "").lower() if isinstance(signal, dict) else ""
-    has_trades = len(decisions or []) > 0
-    has_surprise_news = any(
-        (n.get("news_type") or "").lower() == "surprise" for n in (news or [])
-    )
+    sig = signal if isinstance(signal, dict) else {}
+    sig_action = (sig.get("action") or "").lower()
+    score = sig.get("signal_score")
+    try:
+        score_f = float(score) if score is not None else None
+    except (TypeError, ValueError):
+        score_f = None
+    cal = None
+    try:
+        from oneqaz_trading_mcp.confidence_calibration import calibrated_confidence
+        cal = calibrated_confidence(market_id, "combined", sig.get("confidence"))
+    except Exception:
+        cal = None
 
-    if sig_action == "buy" and has_trades:
-        verdict = "STRONG_BUY"
-        text = (
-            "Buy signal aligned with recent executed trades. The system is actively "
-            "buying — high conviction signal."
-        )
-    elif sig_action == "buy" and not has_trades:
-        verdict = "WEAK_BUY"
-        text = (
-            "Buy signal present but the system has not executed recent trades. "
-            "Verify position limits or risk gates before acting."
-        )
-    elif sig_action == "sell" and has_trades:
-        verdict = "STRONG_SELL"
-        text = "Sell signal aligned with recent sell executions. Active position exit."
-    elif sig_action == "sell" and not has_trades:
-        verdict = "WEAK_SELL"
-        text = (
-            "Sell signal present but no recent execution — possibly no open position to close."
-        )
-    elif sig_action == "hold":
-        if has_surprise_news:
-            verdict = "WAIT_NEWS"
-            text = (
-                "Sideways with recent surprise news. Wait for direction confirmation "
-                "before acting — news impact still unfolding."
+    dec = _latest_decision(decisions)
+    decision = dec.get("decision")
+    hist_cls = _classify_history(historical_pattern)
+    hp = historical_pattern or {}
+
+    strong_score = score_f is not None and abs(score_f) >= _STRONG_SCORE_ABS
+    history_ok = hist_cls == "positive"
+
+    # 실행 사실 서술 (verdict 와 독립 — 결정 로그에 있는 것만 말한다)
+    if decision == "buy":
+        exec_txt = "The system's latest decision for this symbol was a paper BUY."
+    elif decision == "sell":
+        exec_txt = "The system's latest decision for this symbol was a paper SELL."
+    elif dec.get("already_holding"):
+        exec_txt = "Already holding — no additional buy (the latest decision was hold: position already open)."
+    elif decision == "hold":
+        exec_txt = "The latest decision was hold — no new trade executed."
+    else:
+        exec_txt = "No recent trade decision for this symbol."
+
+    hist_txt = {
+        "positive": "Historical outcomes for this signal type are positive",
+        "weak": "Historical outcomes for this signal type are weak — caution warranted",
+        "mixed": "Historical outcomes for this signal type are mixed (neutral)",
+        "untrusted": "Historical sample is below the trust threshold",
+        "none": "No historical outcome stats for this signal type yet",
+    }[hist_cls]
+    if hist_cls in ("positive", "weak", "mixed") and hp:
+        try:
+            hist_txt += (
+                f" (pooled hit rate {float(hp.get('hit_rate') or 0) * 100:.1f}%, "
+                f"avg {float(hp.get('avg_profit_pct') or 0):+.2f}%, n={int(hp.get('sample_count') or 0)})"
             )
+        except (TypeError, ValueError):
+            pass
+    hist_txt += "."
+    score_txt = f"score {score_f:+.3f}" if score_f is not None else "score n/a"
+
+    if sig_action in ("buy", "sell"):
+        side = sig_action.upper()
+        if strong_score and history_ok:
+            verdict = f"STRONG_{side}"
+            lead = f"{side.title()} signal with a strong {score_txt} and supportive history."
         else:
-            verdict = "WAIT_SIDEWAYS"
-            text = (
-                "Sideways consolidation with no clear edge. System recommends waiting "
-                "until a directional signal emerges."
-            )
+            verdict = f"WEAK_{side}"
+            why = []
+            if not strong_score:
+                why.append(f"{score_txt} is below the strong threshold (|score| ≥ {_STRONG_SCORE_ABS})")
+            if not history_ok:
+                why.append("history does not confirm it")
+            lead = f"{side.title()} signal, but {' and '.join(why)}."
+        text = f"{lead} {hist_txt} {exec_txt}"
+    elif sig_action == "hold":
+        verdict = "WAIT_SIDEWAYS"
+        text = (
+            f"No directional signal (hold, {score_txt}). No clear edge — the research signal "
+            f"suggests waiting until a directional signal emerges. {exec_txt}"
+        )
     else:
         verdict = "UNCLEAR"
         text = "Insufficient signal data for a clear recommendation."
 
-    return {"verdict": verdict, "text": text}
+    basis = {
+        "signal_action": sig_action or None,
+        "signal_score": round(score_f, 4) if score_f is not None else None,
+        "signal_timestamp": sig.get("timestamp"),
+        "confidence_raw": sig.get("confidence"),
+        "confidence_calibrated": cal,
+        "latest_decision": decision,
+        "latest_decision_reason": dec.get("reason"),
+        "latest_decision_timestamp": dec.get("timestamp"),
+        "already_holding": bool(dec.get("already_holding")),
+        "historical_class": hist_cls,
+        "historical_hit_rate": hp.get("hit_rate"),
+        "historical_avg_profit_pct": hp.get("avg_profit_pct"),
+        "historical_sample_count": hp.get("sample_count"),
+        "historical_scope": "pooled across all symbols with the same role/regime/grade/interval",
+        "news_flag": "market_wide_unverified_not_used",
+        "rules": {
+            "strong_requires": f"|signal_score| >= {_STRONG_SCORE_ABS} AND historical_class == 'positive'",
+            "historical_positive": "is_trustable AND hit_rate >= 0.60 AND avg_profit_pct > 0",
+            "historical_weak": "hit_rate < 0.40 OR avg_profit_pct < 0",
+            "execution_wording": "buy/sell execution is stated only when latest_decision is buy/sell",
+        },
+    }
+    return {"verdict": verdict, "text": text, "basis": basis}
 
 
 def _explain_decision(
@@ -2129,6 +2968,18 @@ def _explain_decision(
     - news_causality_analysis — 해당 심볼 관련 최근 뉴스 (news DB)
     """
     import json as json_lib
+
+    # [2026-10-07 VALID-001/LAT-001] 시장 정규화 + 종목 커버리지 확인을 맨 앞에.
+    # 종전에는 없는 종목도 무거운 조회를 전부 돈 뒤(30.3s — decision_fingerprint 전체 역스캔이
+    # statement_timeout 에 걸릴 때까지) verdict=UNCLEAR 로 끝났다.
+    market_id, _err = normalize_choice("market", "market_id", market_id)
+    if _err:
+        return _err
+    from oneqaz_trading_mcp.symbol_coverage import check_symbol, normalize_symbol
+    _nf = check_symbol(market_id, symbol, tool="explain_decision")
+    if _nf:
+        return _nf
+    symbol = normalize_symbol(symbol)
 
     # 1) per-symbol signal DB에서 최신 시그널
     sig_dir = SIGNAL_DIR_PATHS.get(market_id.lower())
@@ -2169,10 +3020,19 @@ def _explain_decision(
             # [2026-07-08] score_trace 보유 행 우선 — combined 행만 trace 를 탑재하는데
             # per-interval 행이 같은 timestamp 로 저장돼 "최신 1행"이 상시 NULL 행을
             # 집었다 (explain_decision 의 score_trace 레이어가 죽어 보이던 실증상).
+            # [2026-10-07 LAT-001] 그 의도를 `interval='combined'` 로 직접 표현한다. 종전
+            # `ORDER BY (score_trace IS NOT NULL) DESC, timestamp DESC` 는 식 정렬이라 인덱스를
+            # 못 타 심볼 전 행을 읽었다(coin ETH 8.9만 행·7만 버퍼, 콜드 27.4s = crypto 첫 호출
+            # 13~18s 의 실체). combined 는 (symbol, interval, timestamp) PK 조기 종료로 수 ms,
+            # 3시장 combined 행 score_trace 보유율 100%(2026-10-07 실측 각 4만 행).
             row = conn.execute(
                 f"SELECT {select_clause} FROM signals "
-                f"ORDER BY (score_trace IS NOT NULL) DESC, timestamp DESC LIMIT 1"
+                f"WHERE interval = 'combined' ORDER BY timestamp DESC LIMIT 1"
             ).fetchone()
+            if row is None:  # combined 미생성 심볼 — 아무 interval 최신 행 (인덱스 사용 가능)
+                row = conn.execute(
+                    f"SELECT {select_clause} FROM signals ORDER BY timestamp DESC LIMIT 1"
+                ).fetchone()
             if row:
                 signal_info = {k: (_safe_float(row[k]) if k in ("signal_score", "confidence") else row[k]) for k in row.keys() if k != "score_trace"}
                 # score_trace JSON 파싱 (있으면)
@@ -2257,19 +3117,26 @@ def _explain_decision(
                     ):
                         if opt in cols:
                             select_bits.append(opt)
+                    # [2026-10-13 NEWS-001] 이 시장 범위의 뉴스만 — 뉴스 인과 분석은 모든 뉴스를 모든
+                    #   시장에 대해 계산하므로 market_id 만으로는 BTC·ETH 근거에 DART 공시가 섞였다.
+                    #   news_events.target_markets(external_context/core/news_scope.py)와 조인해 거른다.
+                    #   인과 분석 엔진·통계는 건드리지 않는다(읽기 시점 필터).
                     rows = conn.execute(
                         f"""
-                        SELECT {', '.join(select_bits)}
-                        FROM news_causality_analysis
-                        WHERE market_id = ?
-                        ORDER BY computed_at DESC
+                        SELECT {', '.join('c.' + b for b in select_bits)}
+                        FROM news_causality_analysis c
+                        JOIN news_events n ON n.id = c.news_id
+                        WHERE c.market_id = ?
+                          AND ? = ANY(n.target_markets)
+                        ORDER BY c.computed_at DESC
                         LIMIT 5
                         """,
-                        (mid_norm,),
+                        (mid_norm, mid_norm),
                     ).fetchall()
                     news_info = [dict(r) for r in rows]
         except Exception as exc:
-            logger.debug(f"news causality read failed: {exc}")
+            # [2026-10-13] debug → warning: 근거 뉴스가 조용히 비면 narrative 가 '데이터 없음' 으로 읽힌다
+            logger.warning(f"news causality read failed: {exc}")
 
     # 4) Phase 16-B/E: decision_fingerprint × explanation_patterns
     #    역사적으로 (role_hint, regime, match_grade) 조합이 어떻게 끝났는지 근거.
@@ -2280,19 +3147,29 @@ def _explain_decision(
         try:
             import json as json_lib
             with _open_ro(trading_db) as conn:
-                fp_row = conn.execute(
-                    """
-                    SELECT signal_id, interval, role_hint, match_grade,
-                           role_match_count, mtf_pass_count,
-                           final_score, action, confidence,
-                           mtf_context_json, created_at
-                    FROM decision_fingerprint
-                    WHERE symbol = ?
-                    ORDER BY created_at DESC
-                    LIMIT 1
-                    """,
-                    (symbol,),
-                ).fetchone()
+                # [2026-10-07 LAT-001] 종전 `WHERE symbol=? ORDER BY created_at DESC LIMIT 1` 은
+                # 플래너가 idx_df_created 역방향 스캔을 골라, 그 심볼 행이 없거나 오래됐으면
+                # 테이블 전체(us 4.7GB / 178만 행)를 훑다 statement_timeout 에 걸렸다(실측 >60s,
+                # 응답 30.3s 의 실체 — 예외는 아래 except 가 삼켜 조용히 빈 지문).
+                # ① 최신 combined 시그널의 signal_id 로 PK 조회(수 ms) ② 실패 시 심볼 인덱스로
+                # 먼저 거른 뒤 정렬(OFFSET 0 = 서브쿼리 평탄화 차단, 심볼당 수천 행 · 콜드 ~0.7s).
+                _fp_cols = (
+                    "signal_id, interval, role_hint, match_grade, role_match_count, "
+                    "mtf_pass_count, final_score, action, confidence, mtf_context_json, created_at"
+                )
+                fp_row = None
+                _sig_ts = signal_info.get("timestamp")
+                if _sig_ts:
+                    fp_row = conn.execute(
+                        f"SELECT {_fp_cols} FROM decision_fingerprint WHERE signal_id = ?",
+                        (f"{symbol}_combined_{int(_sig_ts)}_live",),
+                    ).fetchone()
+                if fp_row is None:
+                    fp_row = conn.execute(
+                        f"SELECT * FROM (SELECT {_fp_cols} FROM decision_fingerprint "
+                        f"WHERE symbol = ? OFFSET 0) t ORDER BY created_at DESC LIMIT 1",
+                        (symbol,),
+                    ).fetchone()
                 if fp_row:
                     fingerprint_info = dict(fp_row)
                     role_hint = fingerprint_info.get("role_hint") or "unknown"
@@ -2353,8 +3230,10 @@ def _explain_decision(
     decisions_meta = _build_decisions_meta(decision_info, signal_info)
     news_narrative = _build_news_narrative(news_info)
     overall_recommendation = _build_overall_recommendation(
-        signal_info, decision_info, news_info
+        signal_info, decision_info, news_info,
+        historical_pattern=historical_pattern, market_id=market_id,
     )
+    from oneqaz_trading_mcp.verification import VERIFICATION_UNVERIFIED
 
     return {
         "symbol": symbol,
@@ -2364,9 +3243,17 @@ def _explain_decision(
         "recent_decisions": decision_info,
         "recent_decisions_meta": decisions_meta,
         "recent_news_causality": news_info,
+        # [2026-10-07 NEWS-001] additive — 뉴스 블록의 범위·검증 상태를 필드로도 명시
+        # [2026-10-13 NEWS-001] 시장 범위(news_events.target_markets)로 거른 최신 5건 — 종목 필터는 아님
+        "recent_news_causality_scope": "market_scoped_latest (news_events.target_markets; not filtered to this symbol)",
+        "recent_news_causality_verification": VERIFICATION_UNVERIFIED,
         "news_narrative": news_narrative,
         "decision_fingerprint": fingerprint_info,
         "historical_pattern": historical_pattern,
+        "historical_pattern_scope": (
+            "pooled across all symbols sharing the same role_hint/regime/match_grade/interval — "
+            "not this symbol's own track record"
+        ),
         "historical_narrative": historical_narrative,
         "overall_recommendation": overall_recommendation,
         "meta": {
@@ -2381,7 +3268,10 @@ def _explain_decision(
                 "Multi-layer explanation combining: (1) technical indicators via score_trace, "
                 "(2) Thompson + regime scores from decision log, (3) historical pattern stats "
                 "(decision_fingerprint × explanation_patterns: how this role/regime/grade combo "
-                "ended in past trades), (4) news causality context. "
+                "ended in past trades), (4) news causality context (market-scoped, not symbol-filtered, UNVERIFIED — not "
+                "used in the verdict). `overall_recommendation.basis` lists every input the verdict "
+                "used (signal score, latest decision, historical class) and the rules applied; "
+                "STRONG_* requires both a strong score and positive pooled history. "
                 "Use `overall_recommendation.verdict` for a quick verdict, or read the narrative "
                 "fields (signal_narrative / news_narrative / historical_narrative / "
                 "recent_decisions_meta.interpretation) to present to end users without further "
@@ -2405,6 +3295,15 @@ def _get_cross_market_correlation(
 
     데이터는 news/external_context.db에 있다.
     """
+    # [2026-09-22] 열거형 파라미터 검증 — 미지 시장값이 조용히 통과해
+    # 필터가 무시되거나 0건이 나왔다 (오타와 실제 공백이 구분 불가).
+    source_market, _err = normalize_choice('market', 'source_market', source_market)
+    if _err:
+        return _err
+    target_market, _err = normalize_choice('market', 'target_market', target_market)
+    if _err:
+        return _err
+
     news_db = EXTERNAL_CONTEXT_DATA_DIR / "news" / "external_context.db"
     # SQLite 파일은 PG 이관 후 부재할 수 있음. _open_ro 가 PG 라우팅 처리.
 
@@ -2427,10 +3326,10 @@ def _get_cross_market_correlation(
                 params: List[Any] = []
                 if source_market:
                     query += " AND source_market = ?"
-                    params.append(source_market)
+                    params.append(_macro_target(source_market))
                 if target_market:
                     query += " AND target_market = ?"
-                    params.append(target_market)
+                    params.append(_macro_target(target_market))
                 query += " ORDER BY ABS(correlation_score) DESC LIMIT 100"
 
                 for row in conn.execute(query, params).fetchall():
@@ -2462,10 +3361,10 @@ def _get_cross_market_correlation(
                 params: List[Any] = []
                 if source_market:
                     query += " AND source_market = ?"
-                    params.append(source_market)
+                    params.append(_macro_target(source_market))
                 if target_market:
                     query += " AND target_market = ?"
-                    params.append(target_market)
+                    params.append(_macro_target(target_market))
                 query += " ORDER BY computed_at DESC LIMIT 50"
 
                 for row in conn.execute(query, params).fetchall():
@@ -2536,10 +3435,14 @@ def register_trust_layer_tools(mcp, cache):
         fq_macro_influence_map, fq_explain_decision, fq_cross_market_correlation,
     )
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
+    @mcp.tool(title='Prediction Accuracy', annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
     async def get_prediction_accuracy(
-        category: str = None,
-        target_market: str = None,
+        category: Annotated[Optional[str], Field(
+            description='Optional macro category filter (bonds, forex, vix, commodities, credit, liquidity, inflation, energy)'
+        )] = None,
+        target_market: Annotated[Optional[str], Field(
+            description='Optional target market filter (coin_market, kr_market, us_market). Aliases coin/kr/us and any letter case are accepted.', json_schema_extra={'enum': ['crypto', 'kr_stock', 'us_stock']}
+        )] = None,
     ) -> PredictionAccuracyEnvelope:
         """
         Purpose: Per-cell (category, target_market, lag_bucket) hit rates WITH the honest
@@ -2563,11 +3466,6 @@ def register_trust_layer_tools(mcp, cache):
             as correlated trials (use n_effective). Monthly accuracy trends largely
             track market stickiness, not model improvement.
 
-        Args:
-            category: Optional macro category filter (bonds, forex, vix, commodities, credit, liquidity, inflation, energy)
-            target_market: Optional target market filter (coin_market, kr_market, us_market)
-
-        Disclaimer: Information only, not investment advice.
         """
         # [2026-07-08] wrap(내레이션 포함)까지 스레드로 — 이벤트루프 위 동기 vLLM
         # 대기(최대 35s)가 서버 전체를 정지시키던 문제의 방어 (daily_brief 와 동일 패턴)
@@ -2586,10 +3484,14 @@ def register_trust_layer_tools(mcp, cache):
 
         return await asyncio.to_thread(_build)
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
+    @mcp.tool(title='Backtest Tuning State', annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
     async def get_backtest_tuning_state(
-        category: str = None,
-        target_market: str = None,
+        category: Annotated[Optional[str], Field(
+            description='Optional category filter'
+        )] = None,
+        target_market: Annotated[Optional[str], Field(
+            description='Optional target market filter. Aliases coin/kr/us and any letter case are accepted.', json_schema_extra={'enum': ['crypto', 'kr_stock', 'us_stock']}
+        )] = None,
     ) -> BacktestTuningStateEnvelope:
         """
         Purpose: Continuous self-calibration evidence. Each entry shows the auto-tuned
@@ -2602,11 +3504,6 @@ def register_trust_layer_tools(mcp, cache):
         Next steps: get_monthly_accuracy_trend.
         Caveats: `last_backtest` timestamp indicates tuning freshness.
 
-        Args:
-            category: Optional category filter
-            target_market: Optional target market filter
-
-        Disclaimer: Information only, not investment advice.
         """
         result = await asyncio.to_thread(
             _get_backtest_tuning_state,
@@ -2620,10 +3517,14 @@ def register_trust_layer_tools(mcp, cache):
             followup_questions_fn=fq_backtest_tuning,
         )
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
+    @mcp.tool(title='Monthly Accuracy Trend', annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
     async def get_monthly_accuracy_trend(
-        category: str = None,
-        target_market: str = None,
+        category: Annotated[Optional[str], Field(
+            description='Optional category filter'
+        )] = None,
+        target_market: Annotated[Optional[str], Field(
+            description='Optional target market filter. Aliases coin/kr/us and any letter case are accepted.', json_schema_extra={'enum': ['crypto', 'kr_stock', 'us_stock']}
+        )] = None,
     ) -> MonthlyAccuracyTrendEnvelope:
         """
         Purpose: Monthly accuracy time series per (category, target_market, lag_bucket).
@@ -2635,11 +3536,6 @@ def register_trust_layer_tools(mcp, cache):
         Next steps: none (trust chain complete).
         Caveats: excludes the 'all' month aggregate; empty when backtest_results is unpopulated.
 
-        Args:
-            category: Optional category filter
-            target_market: Optional target market filter
-
-        Disclaimer: Information only, not investment advice.
         """
         result = await asyncio.to_thread(
             _get_monthly_accuracy_trend,
@@ -2653,31 +3549,38 @@ def register_trust_layer_tools(mcp, cache):
             followup_questions_fn=fq_monthly_trend,
         )
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
+    @mcp.tool(title='News Leading-Indicator Performance', annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
     async def get_news_leading_indicator_performance(
-        market_id: str = "crypto",
-        target_market: str = None,
-        min_sample_count: int = 3,
-    ) -> Dict[str, Any]:
+        market_id: Annotated[str, Field(
+            description='Market identifier (crypto, kr_stock, us_stock, etc.). Aliases coin/kr/us and any letter case are accepted.', json_schema_extra={'enum': ['crypto', 'kr_stock', 'us_stock']}
+        )] = 'crypto',
+        target_market: Annotated[Optional[str], Field(
+            description='Alias for market_id (backward compat)', json_schema_extra={'enum': ['crypto', 'kr_stock', 'us_stock']}
+        )] = None,
+        min_sample_count: Annotated[int, Field(
+            description='Minimum rows-per-grouping cutoff (default 3). A coverage filter only — it confers no statistical validity.'
+        )] = 3,
+    ) -> NewsLeadingIndicatorPerformanceEnvelope:
         """
-        Purpose: Evidence that OneQAZ detects price moves BEFORE news publication. Returns
-            leading_score, avg_lead_time_minutes, and accuracy_pct per event type. Strongest
-            Trust Layer A evidence (Layer A = anticipation-capability tier of OneQAZ's 5-layer
-            trust pyramid) — proves the system is anticipatory rather than reactive.
-        Triggers (casual questions too): "can you predict news?", "뉴스 나오기 전에 감지해?",
-            "how early do you catch moves?", "뉴스보다 빨라?", "do prices move before headlines?".
-        When to call: when an AI is evaluating predictive capability.
+        UNVERIFIED — methodology under audit. Do not cite as evidence of predictive capability.
+
+        Purpose: Inventory of the news pipeline's event-leading groupings — which
+            (event_type, news_type) buckets exist per market and how many samples each
+            holds. The lead/score metrics themselves are withheld from this response
+            while the calculation method is being audited.
+        Triggers: "what news event groupings does OneQAZ track?",
+            "뉴스 이벤트 분류 어떤 게 있어?", "how many news samples per event type?".
+        When to call: when inspecting news pipeline coverage. This tool does NOT answer
+            questions about predicting or anticipating news — it carries no such evidence.
         Prerequisites: none.
-        Next steps: get_news_causality_breakdown for the 3-type classification.
-        Caveats: empty when no news events processed in the recent window.
+        Next steps: get_news_causality_breakdown for the label counts.
+        Caveats: empty when no news events processed in the recent window. Sample counts
+            are coverage figures only; they do not imply statistical validity.
 
-        Args:
-            market_id: Market identifier (crypto, kr_stock, us_stock, etc.)
-            target_market: Alias for market_id (backward compat)
-            min_sample_count: Minimum sample count for statistical significance (default 3)
-
-        Disclaimer: Information only, not investment advice.
         """
+        target_market, _err = normalize_choice("market", "target_market", target_market)
+        if _err:
+            return _err
         if target_market and not market_id:
             market_id = target_market
         elif target_market:
@@ -2687,54 +3590,70 @@ def register_trust_layer_tools(mcp, cache):
             market_id=market_id,
             min_sample_count=min_sample_count,
         )
-        return wrap_tool_response(
+        # [2026-09-18 Ticket A] 검증 상태를 최상위에 명시. envelope 이후에 박아야
+        # full_data 안이 아니라 응답 첫 층에 온다.
+        from oneqaz_trading_mcp.verification import mark_unverified
+        return mark_unverified(wrap_tool_response(
             result, "trust_layer",
             _ai_summary_news_lead, _user_summary_news_lead,
             next_actions_fn=for_news_lead,
             followup_questions_fn=fq_news_lead,
-        )
+        ))
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
+    @mcp.tool(title='News Causality Breakdown', annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
     async def get_news_causality_breakdown(
-        market_id: str = "crypto",
-        days: int = 7,
-    ) -> Dict[str, Any]:
+        market_id: Annotated[str, Field(
+            description='Market identifier. Aliases coin/kr/us and any letter case are accepted.', json_schema_extra={'enum': ['crypto', 'kr_stock', 'us_stock']}
+        )] = 'crypto',
+        days: Annotated[int, Field(
+            description='Lookback window in days (default 7)'
+        )] = 7,
+    ) -> NewsCausalityBreakdownEnvelope:
         """
-        Purpose: Three-bucket news classification proving systematic discrimination between
-            anticipated and surprise events. ANTICIPATED = scheduled + pre-move detected,
-            SURPRISE_WITH_PRECURSOR = cascade anomaly (macro -> ETF -> stock) caught early,
-            SURPRISE = pure unexpected.
-        Triggers (casual questions too): "was that news already priced in?", "그 뉴스 예견된 거였어?",
-            "how many surprise events this week?", "돌발 뉴스 비율 어때?", "did the market see it coming?".
-        When to call: after get_news_leading_indicator_performance.
+        UNVERIFIED — methodology under audit. Do not cite as evidence of predictive capability.
+
+        Purpose: Counts of news items per internal label the pipeline assigns.
+            ANTICIPATED = the item matched a scheduled/calendar event.
+            SURPRISE_WITH_PRECURSOR = the item was flagged by the cascade-anomaly heuristic
+            (macro -> ETF -> stock). SURPRISE = neither matched.
+            These are pipeline labels, not validated classifications; the labelling rule
+            and its lead/anticipation metrics are under audit and withheld here.
+        Triggers: "how many news items per category this week?",
+            "뉴스 라벨 분포 어때?", "how many calendar-matched events?".
+        When to call: when inspecting news label coverage. This tool does NOT establish
+            that the market did or did not see an event coming.
         Prerequisites: none.
-        Next steps: market://{market_id}/external/causality for raw causality data.
+        Next steps: market://{market_id}/external/causality for raw causality rows.
         Caveats: window limited to recent days.
 
-        Args:
-            market_id: Market identifier
-            days: Lookback window in days (default 7)
-
-        Disclaimer: Information only, not investment advice.
         """
         result = await asyncio.to_thread(
             _get_news_causality_breakdown,
             market_id=market_id,
             days=days,
         )
-        return wrap_tool_response(
+        # [2026-09-18 Ticket A] 라벨 산출 방법도 같은 감사 대상 — 동일 표식.
+        from oneqaz_trading_mcp.verification import mark_unverified
+        return mark_unverified(wrap_tool_response(
             result, "trust_layer",
             _ai_summary_causality, _user_summary_causality,
             next_actions_fn=for_news_causality,
             followup_questions_fn=fq_news_causality,
-        )
+        ))
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
+    @mcp.tool(title='Feature Governance State', annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
     async def get_feature_governance_state(
-        market_id: str = None,
-        target_market: str = None,
-        status_filter: str = None,
-    ) -> Dict[str, Any]:
+        market_id: Annotated[Optional[str], Field(
+            description='Optional market filter (defaults to coin). Aliases coin/kr/us and any letter case are accepted.', json_schema_extra={'enum': ['crypto', 'kr_stock', 'us_stock']}
+        )] = None,
+        target_market: Annotated[Optional[str], Field(
+            description='Alias for market_id (backward compat)', json_schema_extra={'enum': ['crypto', 'kr_stock', 'us_stock']}
+        )] = None,
+        status_filter: Annotated[Optional[str], Field(
+            description='Optional status filter (OBSERVATION, CONDITIONAL, ACTIVE, DEPRECATED)', json_schema_extra={'enum': ['OBSERVATION', 'CONDITIONAL', 'ACTIVE', 'DEPRECATED']}
+        )] = None,
+        limit: Annotated[int, Field(description='Max results (default 50, max 500). Rows are truncated; see `total_available` and `truncated` in the response. `status_summary` and `meta` counts stay whole-set.')] = _GOV_LIMIT_DEFAULT,
+    ) -> FeatureGovernanceStateEnvelope:
         """
         Purpose: Current lifecycle state of external features (news, events) under 3-track
             statistical validation. Lifecycle: OBSERVATION -> CONDITIONAL -> ACTIVE (p-value passed)
@@ -2746,20 +3665,24 @@ def register_trust_layer_tools(mcp, cache):
         Prerequisites: none.
         Next steps: none (meta evidence).
         Caveats: empty when feature_gate_evaluator has not yet run cycles.
+            Rows are paginated — read `total_available` (not `len(features)`) for the
+            whole-set size. `status_summary`, `meta.*` and `interpretation` are always
+            computed over the whole set, never over the returned page.
+            Rows with `frozen=true` (see `meta.frozen_feature_types`: reason, values_as_of) are a
+            legacy measurement frozen on 2026-10-14 — their status/counts no longer update;
+            do not quote them as current.
 
-        Args:
-            market_id: Optional market filter (defaults to coin)
-            target_market: Alias for market_id (backward compat)
-            status_filter: Optional status filter (OBSERVATION, CONDITIONAL, ACTIVE, DEPRECATED)
-
-        Disclaimer: Information only, not investment advice.
         """
+        target_market, _err = normalize_choice("market", "target_market", target_market)
+        if _err:
+            return _err
         if target_market and not market_id:
             market_id = target_market
         result = await asyncio.to_thread(
             _get_feature_governance_state,
             market_id=market_id,
             status_filter=status_filter,
+            limit=limit,
         )
         return wrap_tool_response(
             result, "trust_layer",
@@ -2772,15 +3695,22 @@ def register_trust_layer_tools(mcp, cache):
     # P1 Tools (Layer D + E + active forecasts)
     # =======================================================================
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
+    @mcp.tool(title='Structure Calibration (Level 2)', annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
     async def get_structure_calibration(
-        market_id: str = None,
-        group_name: str = None,
-    ) -> Dict[str, Any]:
+        market_id: Annotated[Optional[str], Field(
+            description='Optional market filter (crypto, kr_stock, us_stock). Aliases coin/kr/us and any letter case are accepted.', json_schema_extra={'enum': ['crypto', 'kr_stock', 'us_stock']}
+        )] = None,
+        group_name: Annotated[Optional[str], Field(
+            description='Optional group/sector filter (e.g., layer1, defi, sector, broad_index)'
+        )] = None,
+        limit: Annotated[int, Field(description='Max results (default 50, max 500). Rows are truncated; see `total_available` and `truncated` in the response. `baseline` and `meta` counts stay whole-set.')] = _CALIB_LIMIT_DEFAULT,
+    ) -> StructureCalibrationEnvelope:
         """
         Purpose: Level 2 (ETF / basket / sector granularity — Level 1 is individual symbols)
             prediction calibration. Returns hit_rate_ema per (market, group, interval,
-            regime_bucket) with sample counts. Proves systematic edge at the sector-rotation level.
+            regime_bucket) with sample counts, **plus the majority-class baseline needed to
+            interpret them**. This is measurement, NOT a claim of edge — as of 2026-09-18 the
+            measured skill (accuracy minus baseline) is negative in all three markets.
         Triggers (casual questions too): "how good are your sector calls?", "섹터 예측 잘 맞아?",
             "sector rotation accuracy?", "그룹 단위 적중률 보여줘", "can you time sector moves?".
         When to call: when an AI wants to see Layer D evidence (Layer D = sector-structure
@@ -2788,17 +3718,17 @@ def register_trust_layer_tools(mcp, cache):
         Prerequisites: none.
         Next steps: get_structure_validation_history for the daily trend.
         Caveats: empty until structure-learning cycles complete.
+            Rows are paginated — read `total_available` (not `len(calibration)`) for the
+            whole-set size. `baseline`, `meta.total_entries` and `meta.total_samples` are
+            always whole-set. Rows keep their dimension keys (market_id / interval /
+            regime_bucket); they are never hoisted out of the row.
 
-        Args:
-            market_id: Optional market filter (crypto, kr_stock, us_stock)
-            group_name: Optional group/sector filter (e.g., layer1, defi, sector, broad_index)
-
-        Disclaimer: Information only, not investment advice.
         """
         result = await asyncio.to_thread(
             _get_structure_calibration,
             market_id=market_id,
             group_name=group_name,
+            limit=limit,
         )
         return wrap_tool_response(
             result, "trust_layer",
@@ -2807,11 +3737,15 @@ def register_trust_layer_tools(mcp, cache):
             followup_questions_fn=fq_structure_calibration,
         )
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
+    @mcp.tool(title='Structure Validation History', annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
     async def get_structure_validation_history(
-        market_id: str = None,
-        days: int = 90,
-    ) -> Dict[str, Any]:
+        market_id: Annotated[Optional[str], Field(
+            description='Optional market filter. Aliases coin/kr/us and any letter case are accepted.', json_schema_extra={'enum': ['crypto', 'kr_stock', 'us_stock']}
+        )] = None,
+        days: Annotated[int, Field(
+            description='Lookback window in days (default 90)'
+        )] = 90,
+    ) -> StructureValidationHistoryEnvelope:
         """
         Purpose: Daily validation history of Level 2 structure predictions (Level 2 =
             ETF / basket / sector granularity). Each row shows the hit_rate for a specific day,
@@ -2823,11 +3757,6 @@ def register_trust_layer_tools(mcp, cache):
         Next steps: get_monthly_accuracy_trend for the macro-level comparison.
         Caveats: returns an overall_hit_rate summary across the window.
 
-        Args:
-            market_id: Optional market filter
-            days: Lookback window in days (default 90)
-
-        Disclaimer: Information only, not investment advice.
         """
         result = await asyncio.to_thread(
             _get_structure_validation_history,
@@ -2841,14 +3770,26 @@ def register_trust_layer_tools(mcp, cache):
             followup_questions_fn=fq_structure_history,
         )
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
+    @mcp.tool(title='Strategy Leaderboard', annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
     async def get_strategy_leaderboard(
-        market_id: str = "crypto",
-        target_market: str = None,
-        top_n: int = 20,
-        limit: int = None,
-        min_trades: int = 10,
-        include_per_symbol: bool = True,
+        market_id: Annotated[str, Field(
+            description='Market identifier (crypto, kr_stock, us_stock). Aliases coin/kr/us and any letter case are accepted.', json_schema_extra={'enum': ['crypto', 'kr_stock', 'us_stock']}
+        )] = 'crypto',
+        target_market: Annotated[Optional[str], Field(
+            description='Alias for market_id (backward compat)', json_schema_extra={'enum': ['crypto', 'kr_stock', 'us_stock']}
+        )] = None,
+        top_n: Annotated[int, Field(
+            description='Top N strategies to return (default 20)'
+        )] = 20,
+        limit: Annotated[Optional[int], Field(
+            description='Alias for top_n (client-compat)'
+        )] = None,
+        min_trades: Annotated[int, Field(
+            description='Minimum trades count for inclusion (default 10)'
+        )] = 10,
+        include_per_symbol: Annotated[bool, Field(
+            description='Include per-symbol PG partition results (default True)'
+        )] = True,
     ) -> StrategyLeaderboardEnvelope:
         """
         Purpose: Top RL-learned research strategies — GLOBAL pool + per-symbol partition.
@@ -2863,16 +3804,12 @@ def register_trust_layer_tools(mcp, cache):
         Caveats: `min_trades` filter enforces statistical validity. Strategies are paper-tested,
             not real-money executed.
 
-        Args:
-            market_id: Market identifier (crypto, kr_stock, us_stock)
-            target_market: Alias for market_id (backward compat)
-            top_n: Top N strategies to return (default 20)
-            limit: Alias for top_n (client-compat)
-            min_trades: Minimum trades count for inclusion (default 10)
-            include_per_symbol: Include per-symbol PG partition results (default True)
-
-        Disclaimer: Information only, not investment advice.
         """
+        # [2026-09-22] 이 wrapper 들은 target_market 를 market_id 로 병합한 뒤
+        # 헬퍼에 넘기므로, 병합 **전**에 검증해야 오타가 조용히 삼켜지지 않는다.
+        target_market, _err = normalize_choice("market", "target_market", target_market)
+        if _err:
+            return _err
         if target_market and not market_id:
             market_id = target_market
         if limit is not None:
@@ -2891,10 +3828,14 @@ def register_trust_layer_tools(mcp, cache):
             followup_questions_fn=fq_strategy_leaderboard,
         )
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
+    @mcp.tool(title='Active Predictions', annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
     async def get_active_predictions(
-        target_market: str = None,
-        limit: int = 20,
+        target_market: Annotated[Optional[str], Field(
+            description='Optional target market filter (coin_market, kr_market, us_market). Aliases coin/kr/us and any letter case are accepted.', json_schema_extra={'enum': ['crypto', 'kr_stock', 'us_stock']}
+        )] = None,
+        limit: Annotated[int, Field(
+            description='Max active predictions to return (default 20)'
+        )] = 20,
     ) -> ActivePredictionsEnvelope:
         """
         Purpose: Currently pending predictions (outcome IS NULL). Demonstrates that OneQAZ is
@@ -2907,11 +3848,6 @@ def register_trust_layer_tools(mcp, cache):
         Next steps: get_prediction_accuracy to compare with historical hit rate on similar cells.
         Caveats: returns most recent first.
 
-        Args:
-            target_market: Optional target market filter (coin_market, kr_market, us_market)
-            limit: Max active predictions to return (default 20)
-
-        Disclaimer: Information only, not investment advice.
         """
         result = await asyncio.to_thread(
             _get_active_predictions,
@@ -2929,26 +3865,26 @@ def register_trust_layer_tools(mcp, cache):
     # P2 Tools (Transparency / Explanation)
     # =======================================================================
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
+    @mcp.tool(title='Macro Influence Map', annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
     async def get_macro_influence_map(
-        market_id: str = None,
-    ) -> Dict[str, Any]:
+        market_id: Annotated[Optional[str], Field(
+            description='Optional target market filter (coin_market, kr_market, us_market). Aliases coin/kr/us and any letter case are accepted.', json_schema_extra={'enum': ['crypto', 'kr_stock', 'us_stock']}
+        )] = None,
+    ) -> MacroInfluenceMapEnvelope:
         """
         Purpose: Expose OneQAZ's pre-defined causal hypothesis map. Each macro category
             (bonds, forex, vix, credit, liquidity, inflation, commodities, energy) is mapped
-            to a target market with lag_hours + sensitivity. Highest-transparency tool —
-            the causal reasoning is visible and measurable.
+            to a target market with lag_hours + sensitivity (static prior) and an
+            `effective` block with the value the engine actually uses (backtest_tuning
+            when the cell passes the tuning gate).
         Triggers (casual questions too): "how do rates affect crypto?", "금리가 코인에 어떻게 영향 줘?",
             "what's your causal model?", "예측 논리가 뭐야?", "which macro drives which market?".
         When to call: when an AI wants to understand WHY we make certain predictions.
         Prerequisites: none.
         Next steps: get_backtest_tuning_state for runtime calibration of these hypotheses.
-        Caveats: static hypothesis only; see tuning state for current adjustments.
+        Caveats: top-level values are static priors — cite each cell's `effective` block
+            for what the engine uses (meta.effective_status reports lookup failures).
 
-        Args:
-            market_id: Optional target market filter (coin_market, kr_market, us_market)
-
-        Disclaimer: Information only, not investment advice.
         """
         result = await asyncio.to_thread(
             _get_macro_influence_map,
@@ -2961,10 +3897,14 @@ def register_trust_layer_tools(mcp, cache):
             followup_questions_fn=fq_macro_influence_map,
         )
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
+    @mcp.tool(title='Explain a Decision', annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
     async def explain_decision(
-        market_id: str,
-        symbol: str,
+        market_id: Annotated[str, Field(
+            description='Market identifier (crypto, kr_stock, us_stock; aliases coin/kr/us)', json_schema_extra={'enum': ['crypto', 'kr_stock', 'us_stock']}
+        )],
+        symbol: Annotated[str, Field(
+            description='Symbol to explain (e.g., btc, eth, 005930)'
+        )],
     ) -> ExplainDecisionEnvelope:
         """
         Purpose: Multi-layer explanation for a single symbol's recent research signal.
@@ -2980,11 +3920,6 @@ def register_trust_layer_tools(mcp, cache):
         Caveats: `symbol` must match the per-symbol signal store filename (lowercase).
             Output is research evidence, NOT a buy or sell recommendation.
 
-        Args:
-            market_id: Market identifier (crypto, kr_stock, us_stock; aliases coin/kr/us)
-            symbol: Symbol to explain (e.g., btc, eth, 005930)
-
-        Disclaimer: Information only, not investment advice.
         """
         # [2026-07-08] wrap(내레이션 포함)까지 스레드로 (daily_brief 와 동일 패턴)
         def _build():
@@ -3002,11 +3937,15 @@ def register_trust_layer_tools(mcp, cache):
 
         return await asyncio.to_thread(_build)
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
+    @mcp.tool(title='Cross Market Correlation', annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
     async def get_cross_market_correlation(
-        source_market: str = None,
-        target_market: str = None,
-    ) -> Dict[str, Any]:
+        source_market: Annotated[Optional[str], Field(
+            description='Optional source market filter. Aliases coin/kr/us and any letter case are accepted.', json_schema_extra={'enum': ['crypto', 'kr_stock', 'us_stock']}
+        )] = None,
+        target_market: Annotated[Optional[str], Field(
+            description='Optional target market filter. Aliases coin/kr/us and any letter case are accepted.', json_schema_extra={'enum': ['crypto', 'kr_stock', 'us_stock']}
+        )] = None,
+    ) -> CrossMarketCorrelationEnvelope:
         """
         Purpose: Cross-market lead-lag relationships and decoupling events. Shows how
             markets influence each other (correlations) and when they diverge (decoupling,
@@ -3018,11 +3957,6 @@ def register_trust_layer_tools(mcp, cache):
         Next steps: get_macro_influence_map for the static causal hypotheses.
         Caveats: correlation data may be empty until enough regime changes accumulate.
 
-        Args:
-            source_market: Optional source market filter
-            target_market: Optional target market filter
-
-        Disclaimer: Information only, not investment advice.
         """
         result = await asyncio.to_thread(
             _get_cross_market_correlation,

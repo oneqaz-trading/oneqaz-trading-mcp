@@ -16,8 +16,11 @@ B2AI 트러스트 레이어 도구로 노출한다.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
 
+from pydantic import Field
+
+from oneqaz_trading_mcp.resources.resource_response import mcp_error, MCPErrorCode, normalize_choice
 from oneqaz_trading_mcp.resources.resource_response import wrap_tool_response
 # Phase B (2026-05-07): module-level 함수에서 호출. lazy import 로 circular 회피.
 def _next_actions_imports():
@@ -46,6 +49,18 @@ def _followup_imports():
 
 logger = logging.getLogger("MarketMCP")
 
+# [2026-09-23 P0-B] pinned outputSchema — FastMCP 가 반환 annotation 을
+# introspect 해 outputSchema 를 만든다. pydantic 부재 시 Dict 로 격하.
+try:
+    from oneqaz_trading_mcp.schemas import FeatureGovernanceStatusEnvelope, MacroCausalityGraphEnvelope, SectorCorrelationsEnvelope, SymbolPeerLinksEnvelope
+except ImportError:  # pragma: no cover
+    FeatureGovernanceStatusEnvelope = Dict[str, Any]  # type: ignore[assignment,misc]
+    MacroCausalityGraphEnvelope = Dict[str, Any]  # type: ignore[assignment,misc]
+    SectorCorrelationsEnvelope = Dict[str, Any]  # type: ignore[assignment,misc]
+    SymbolPeerLinksEnvelope = Dict[str, Any]  # type: ignore[assignment,misc]
+
+
+
 _VALID_MARKETS = ("coin", "kr_stock", "us_stock")
 
 
@@ -70,10 +85,20 @@ async def get_sector_correlations(market_id: str = "us_stock",
     [주의] 데이터는 6시간마다 갱신. 60일 lookback 기본.
     [출력 스키마] full_data: market_id, top_pairs[{a,b,corr,cluster_id,n}],
                   clusters[{cluster_id, size, intra_corr, members}], total_pairs(int)."""
+    # [2026-09-22] 이 분기는 죽어 있었다 — wrap_tool_response 의 **구 시그니처**
+    # (data, ai_summary=...) 를 호출해 잘못된 시장값이면 TypeError 로 크래시했다.
+    # 정상값에서만 도달하지 않으니 아무도 몰랐다.
+    # ⚠️ 이 모듈의 내부 어휘는 'coin' 이고 공개 정본은 'crypto' 다 — 정규화 후
+    # 되돌려 매핑한다. 공개 스키마는 crypto 를 광고하고 coin 도 계속 받는다.
+    market_id, _err = normalize_choice("market", "market_id", market_id)
+    if _err:
+        return _err
+    market_id = "coin" if market_id == "crypto" else market_id
     if market_id not in _VALID_MARKETS:
-        return wrap_tool_response(
-            {"error": f"invalid_market:{market_id}"},
-            ai_summary=f"market_id 는 {_VALID_MARKETS} 중 하나",
+        return mcp_error(
+            MCPErrorCode.INVALID_MARKET,
+            f"Invalid market_id={market_id!r}. Allowed: crypto, kr_stock, us_stock",
+            allowed_values=["crypto", "kr_stock", "us_stock"],
         )
 
     pg = _open_pg()
@@ -233,10 +258,20 @@ async def get_symbol_peer_links(market_id: str = "us_stock",
     [주의] 14일 lookback, 15분 봉 기반. lag 는 분 단위.
     [출력 스키마] full_data: market_id, focus_symbol(str?), as_lead[{follow,lag_min,corr,n}],
                   as_follow[{lead,lag_min,corr,n}], total_links."""
+    # [2026-09-22] 이 분기는 죽어 있었다 — wrap_tool_response 의 **구 시그니처**
+    # (data, ai_summary=...) 를 호출해 잘못된 시장값이면 TypeError 로 크래시했다.
+    # 정상값에서만 도달하지 않으니 아무도 몰랐다.
+    # ⚠️ 이 모듈의 내부 어휘는 'coin' 이고 공개 정본은 'crypto' 다 — 정규화 후
+    # 되돌려 매핑한다. 공개 스키마는 crypto 를 광고하고 coin 도 계속 받는다.
+    market_id, _err = normalize_choice("market", "market_id", market_id)
+    if _err:
+        return _err
+    market_id = "coin" if market_id == "crypto" else market_id
     if market_id not in _VALID_MARKETS:
-        return wrap_tool_response(
-            {"error": f"invalid_market:{market_id}"},
-            ai_summary=f"market_id 는 {_VALID_MARKETS} 중 하나",
+        return mcp_error(
+            MCPErrorCode.INVALID_MARKET,
+            f"Invalid market_id={market_id!r}. Allowed: crypto, kr_stock, us_stock",
+            allowed_values=["crypto", "kr_stock", "us_stock"],
         )
 
     pg = _open_pg()
@@ -338,15 +373,29 @@ async def get_feature_governance_status() -> Dict[str, Any]:
     [호출 시점] 신뢰도 평가 / 어떤 피처가 활성인지 확인 시.
     [선행 조건] 없음.
     [후속 추천] get_feature_governance_state (기존 도구, 상세 lifecycle).
-    [주의] 1시간마다 자동 promoter 가 갱신.
+    [주의] 1시간마다 자동 promoter 가 갱신. 단 frozen_feature_types 의 피처(2026-10-14 레거시 동결)는
+           갱신되지 않는다 — by_status 에 포함돼 있으나 현재 값으로 읽지 말 것.
     [출력 스키마] full_data: by_status, recent_transitions[{feature_id, old, new, evaluated_at}],
-                  total."""
+                  total, frozen_feature_types{type: {rows, values_as_of, reason}}."""
+    from oneqaz_trading_mcp.tools.trust_layer import governance_frozen_summary, governance_frozen_types
+
+    frozen_types = governance_frozen_types()
     pg = _open_pg()
     try:
         status_rows = pg.execute(
             "SELECT status, COUNT(*) AS c FROM feature_governance GROUP BY status"
         ).fetchall()
         by_status = {(r["status"] or "null"): int(r["c"] or 0) for r in status_rows}
+
+        # [2026-10-14] 동결 피처 — 행 수·마지막 실제 평가 시각 (get_feature_governance_state 의 meta 와 같은 형식)
+        frozen_rows: List[Dict[str, Any]] = []
+        if frozen_types:
+            ph = ", ".join("?" for _ in frozen_types)
+            frozen_rows = [dict(r) for r in pg.execute(
+                f"SELECT feature_type, status, last_evaluated_at FROM feature_governance WHERE feature_type IN ({ph})",
+                tuple(frozen_types),
+            ).fetchall()]
+        frozen_summary = governance_frozen_summary(frozen_rows, frozen_types)
 
         # 2026-05-08 fix: NOW() - INTERVAL '7 days' 는 PG 전용 — AWS SQLite 에서
         # syntax error. ISO string lexicographic 비교로 변환 (timestamptz / TEXT
@@ -381,13 +430,23 @@ async def get_feature_governance_status() -> Dict[str, Any]:
     summary = (f"governance: total={total} ACTIVE+CONDITIONAL={active_cond} "
                f"(OBS={by_status.get('OBSERVATION', 0)}, DEPRECATED={by_status.get('DEPRECATED', 0)}). "
                f"recent_transitions={len(transitions)}")
+    _user = f"피처 거버넌스: 총 {total}개 (활성+조건부 {active_cond})"
+    if frozen_summary:
+        from oneqaz_trading_mcp.tools.trust_layer import governance_frozen_status_count
+
+        _fz = ", ".join(f"{ft} {v['rows']}" for ft, v in frozen_summary.items())
+        _live = active_cond - (governance_frozen_status_count(frozen_summary, "ACTIVE")
+                               + governance_frozen_status_count(frozen_summary, "CONDITIONAL"))
+        summary += f". FROZEN (legacy, not updating): {_fz} → live ACTIVE+CONDITIONAL={_live}"
+        _user = (f"피처 거버넌스: 총 {total}개 (활성+조건부 {active_cond} 중 현재 운영 {_live}) · "
+                 f"동결(갱신 정지·정의 무효): {_fz}행")
 
     _summary = summary
-    _user = f"피처 거버넌스: 총 {total}개 (활성+조건부 {active_cond})"
     return wrap_tool_response(
         {"by_status": by_status,
          "recent_transitions": transitions,
-         "total": total},
+         "total": total,
+         "frozen_feature_types": frozen_summary},
         "trust_layer",
         lambda _d: _summary,
         lambda _d: _user,
@@ -401,9 +460,15 @@ async def get_feature_governance_status() -> Dict[str, Any]:
 def register_layer_correlation_tools(mcp, cache=None):
     """Stage 2 산출물 노출 (sector / macro / peer / governance status)."""
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
-    async def get_sector_correlations_tool(market_id: str = "us_stock",
-                                            top_k: int = 20) -> Dict[str, Any]:
+    @mcp.tool(title='Sector Correlations', annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
+    async def get_sector_correlations_tool(
+        market_id: Annotated[str, Field(
+            description='coin / kr_stock / us_stock. Aliases coin/kr/us and any letter case are accepted.', json_schema_extra={'enum': ['crypto', 'kr_stock', 'us_stock']}
+        )] = 'us_stock',
+        top_k: Annotated[int, Field(
+            description='Number of top pairs to return'
+        )] = 20,
+    ) -> SectorCorrelationsEnvelope:
         """
         Purpose: Intra-market ETF / group correlation matrix and auto-cluster output.
             Quantifies structural co-movement (e.g. ARKK <-> QQQ) for diversification
@@ -415,17 +480,18 @@ def register_layer_correlation_tools(mcp, cache=None):
         Next steps: get_symbol_peer_links_tool for per-symbol lead-lag inside a sector.
         Caveats: refreshed every 6 hours; 60-day lookback.
 
-        Args:
-            market_id: coin / kr_stock / us_stock
-            top_k: Number of top pairs to return
-
-        Disclaimer: Information only, not investment advice.
         """
         return await get_sector_correlations(market_id=market_id, top_k=top_k)
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
-    async def get_macro_causality_graph_tool(min_abs_corr: float = 0.15,
-                                              max_p_value: float = 0.05) -> Dict[str, Any]:
+    @mcp.tool(title='Macro Causality Graph', annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
+    async def get_macro_causality_graph_tool(
+        min_abs_corr: Annotated[float, Field(
+            description='Minimum |corr| (default 0.15)'
+        )] = 0.15,
+        max_p_value: Annotated[float, Field(
+            description='Maximum p-value (default 0.05)'
+        )] = 0.05,
+    ) -> MacroCausalityGraphEnvelope:
         """
         Purpose: Lag-aware causal graph between macro categories
             (bonds / vix / forex / credit / inflation / liquidity / commodities).
@@ -438,19 +504,22 @@ def register_layer_correlation_tools(mcp, cache=None):
         Next steps: get_macro_influence_map for category -> market impact.
         Caveats: Pearson-based; requires >= 30 samples; p < 0.05 filter.
 
-        Args:
-            min_abs_corr: Minimum |corr| (default 0.15)
-            max_p_value: Maximum p-value (default 0.05)
-
-        Disclaimer: Information only, not investment advice.
         """
         return await get_macro_causality_graph(min_abs_corr=min_abs_corr,
                                                 max_p_value=max_p_value)
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
-    async def get_symbol_peer_links_tool(market_id: str = "us_stock",
-                                          symbol: Optional[str] = None,
-                                          top_k: int = 20) -> Dict[str, Any]:
+    @mcp.tool(title='Symbol Peer Links', annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
+    async def get_symbol_peer_links_tool(
+        market_id: Annotated[str, Field(
+            description='coin / kr_stock / us_stock. Aliases coin/kr/us and any letter case are accepted.', json_schema_extra={'enum': ['crypto', 'kr_stock', 'us_stock']}
+        )] = 'us_stock',
+        symbol: Annotated[Optional[str], Field(
+            description='Optional. When set, peers are anchored to this symbol.'
+        )] = None,
+        top_k: Annotated[int, Field(
+            description='Number of top links to return'
+        )] = 20,
+    ) -> SymbolPeerLinksEnvelope:
         """
         Purpose: Symbol-level lead-lag links (e.g. META -> AMZN, lag=15m, rho=+0.53).
             When `symbol` is set, only peers that lead or follow that symbol are returned.
@@ -461,17 +530,11 @@ def register_layer_correlation_tools(mcp, cache=None):
         Next steps: get_signal_detail for the peer's signal context.
         Caveats: 14-day lookback, 15-minute bars.
 
-        Args:
-            market_id: coin / kr_stock / us_stock
-            symbol: Optional. When set, peers are anchored to this symbol.
-            top_k: Number of top links to return
-
-        Disclaimer: Information only, not investment advice.
         """
         return await get_symbol_peer_links(market_id=market_id, symbol=symbol, top_k=top_k)
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
-    async def get_feature_governance_status_tool() -> Dict[str, Any]:
+    @mcp.tool(title='Feature Governance Status', annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
+    async def get_feature_governance_status_tool() -> FeatureGovernanceStatusEnvelope:
         """
         Purpose: Feature governance snapshot — OBSERVATION / CONDITIONAL / ACTIVE / DEPRECATED
             distribution + last 7-day transitions. Surfaces which features survived statistical
@@ -483,6 +546,5 @@ def register_layer_correlation_tools(mcp, cache=None):
         Next steps: get_feature_governance_state for full per-feature lifecycle detail.
         Caveats: promoter cycle runs hourly.
 
-        Disclaimer: Information only, not investment advice.
         """
         return await get_feature_governance_status()

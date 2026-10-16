@@ -322,9 +322,13 @@ def snapshot_signal_calibration() -> int:
                 # COUNT 단독 15s+ 실측)이라 시장별 성장 순서대로 매시간 타임아웃→continue
                 # 무음 결손 (crypto 08-02+/us 07-30+ 실증). 이 집계 한정 국소 상향.
                 # 롤백: env CALIB_SNAPSHOT_STMT_TIMEOUT='30s'.
+                # [2026-10-05] 120s → 300s. crypto 집계가 다시 경계에 걸렸다 — 10-02 결손,
+                # 10-05 매시간 재시도 3회 연속 QueryCanceled (10-04 는 경계 성공). 일 1회
+                # 백그라운드 집계라 요청 경로와 무관하고, 실패 모드가 조용한 결손이라
+                # 여유를 둔다. 근본 해소(조인 비용 절감)는 별건.
                 try:
                     conn.execute(
-                        f"SET statement_timeout = '{os.environ.get('CALIB_SNAPSHOT_STMT_TIMEOUT', '120s')}'"
+                        f"SET statement_timeout = '{os.environ.get('CALIB_SNAPSHOT_STMT_TIMEOUT', '300s')}'"
                     )
                 except Exception:
                     logger.warning("[ledger] calibration: %s statement_timeout 설정 실패", schema)
@@ -332,10 +336,26 @@ def snapshot_signal_calibration() -> int:
                 # + 10일 여유 — 보존창보다 넓어 결과 불변, signals(무보존 누적) 풀
                 # 조인 스캔만 차단 (coin 08-04 타임아웃 실증의 근본 원인). PG 는
                 # 등가류에서 부등호를 전파하지 않으므로 sp/s 양쪽에 명시적으로 건다.
+                # [2026-09-21] 분석창을 **보존창에서 분리**한다.
+                #   종전 `retention + 10일` 은 "보존창(30일)보다 넓어 결과 불변" 이라는
+                #   전제 위에서만 싸게 성립했다. 보존창이 365일이 되면 375일로 벌어지고
+                #   이 쿼리는 signals(무보존 누적, market_coin **79GB**)를 조인한다 —
+                #   실측 계획비용 693,372 -> 8,957,622 (**12.9배**, 2026-09-21 EXPLAIN).
+                #   바로 위 statement_timeout(120s) 의 실패 모드가 **조용한 스냅샷 결손**이라
+                #   (주석이 인용한 coin 08-04 사고) 여기서 벌리면 그 사고를 재설치한다.
+                #   min() 이 옛 불변식 유지 — 데이터 물리 범위보다 넓어지지 않는다.
+                #   ⚠️ 넓히는 것은 캘리브레이션 경로 변경 = 사람 승격 게이트.
+                #   같은 식: trade/core/confidence_v2.py, trade/core/score_v2.py
+                # [2026-10-06 수리 — 사용자 승인] 숨은 `+ 10일` 제거. 보존 365일 발효(09-21) 뒤
+                #   +10일 구간이 실데이터로 차서 실효창이 무승인으로 30 → 40일이 됐다(일별 스냅샷
+                #   ts_min/ts_max 실측 29.97 → 39.97일, 행 +48.7%). 추가 10일 = 판정 인공물 구간이라
+                #   외부 노출 kr 30m 캘리브레이션이 +8~12pp 부풀었고, crypto 스냅샷 타임아웃이
+                #   만성화했다(10-02 결손). 창 = CALIB_LOOKBACK_SEC 그대로(기본 30일).
                 _retention_sec = int(
                     os.environ.get("ACCURACY_LEDGER_RETENTION_SEC", str(30 * 86400))
                 )
-                _bound_ts = int(time.time()) - (_retention_sec + 10 * 86400)
+                _lookback_sec = int(os.environ.get("CALIB_LOOKBACK_SEC", str(30 * 86400)))
+                _bound_ts = int(time.time()) - min(_lookback_sec, _retention_sec)
                 variant_rows = {}
                 for variant, col in _VARIANT_COL.items():
                     bucket_sql = _CALIBRATION_BUCKET_SQL.replace("s.confidence", col)
@@ -402,7 +422,7 @@ def snapshot_score_calibration() -> int:
 
     X2(raw 점수)와 score_v2(p̂ 섀도우, 기록 시점 동결값)의 실현 적중률을
     (day, market, bucket, variant) 로 동결 — A3 승격 게이트(ECE+선별력 스프레드
-    7연속 우위 + 사람 판정)의 원장. variant 3종:
+    7연속 우위 + 사람 판정)의 원장. variant 4종(state_lift_h24 는 2026-08-31 추가):
       score_raw_h30 / score_raw_h24 — bucket = X2 0.1 버킷. 공정 v1 기준선
         (버킷 경험 적중률 — "raw X2 를 확률로 간주" 허수아비 비교 금지, r2 리뷰).
         30m/24h 이원은 판정 지평 택일(§A1)의 비교 원장.
@@ -420,13 +440,22 @@ def snapshot_score_calibration() -> int:
         # [리뷰 r1 반영] 이동 바운드 — era 고정 하한만 두면 signals(무보존 누적) 스캔이
         # 선형 성장해 120s 타임아웃 무음 결손 재발 (confidence 스냅샷 08-10 r2 동일 함정).
         # sp 보존창(30d)이 실코호트를 물리 바운드하므로 결과 불변.
+        # [2026-09-21] ⚠️ 보존창 365일에서는 이동 바운드(375일)가 ERA 아래로 내려가
+        #   max() 가 ERA 를 고르고, 위 주석이 경고한 **"era 고정 하한만 두면 선형 성장"**
+        #   상태로 정확히 되돌아간다. 분석창을 보존창에서 분리해 이동 바운드를 살린다.
+        #   상세는 이 파일 calibration 절.
+        # [2026-10-06 수리] 숨은 `+ 10일` 제거 — 실효창 40 → 30일(calibration 절과 같은 사유).
         _retention_sec = int(os.environ.get("ACCURACY_LEDGER_RETENTION_SEC", str(30 * 86400)))
-        _bound_ts = max(_SCORE_ERA_START_TS, int(time.time()) - (_retention_sec + 10 * 86400))
+        _lookback_sec = int(os.environ.get("CALIB_LOOKBACK_SEC", str(30 * 86400)))
+        _bound_ts = max(
+            _SCORE_ERA_START_TS,
+            int(time.time()) - min(_lookback_sec, _retention_sec),
+        )
         _DEDUP_CTE = f"""
             WITH dedup AS (
                 SELECT DISTINCT ON (sp.symbol, FLOOR(sp.timestamp / 1800.0))
                        sp.signal_score, sp.is_correct, sp.is_correct_24h,
-                       sp.timestamp, s.score_v2
+                       sp.timestamp, s.score_v2, s.state_prior_lift
                   FROM signal_predictions sp
                   LEFT JOIN signals s
                     ON s.symbol = sp.symbol
@@ -457,6 +486,23 @@ def snapshot_score_calibration() -> int:
                 SELECT CASE WHEN score_v2 IS NULL THEN 'NULL'
                             ELSE 'p[' || ROUND((FLOOR(score_v2 * 20) / 20.0)::numeric, 2) || ','
                                  || ROUND((FLOOR(score_v2 * 20) / 20.0 + 0.05)::numeric, 2) || ')' END AS bucket,
+                       COUNT(*) AS n, SUM(is_correct_24h) AS hits,
+                       MIN(timestamp) AS ts_min, MAX(timestamp) AS ts_max
+                  FROM dedup WHERE is_correct_24h IN (0, 1) GROUP BY 1""",
+            # [2026-08-31 state_prior Phase 0] 상태 원장 lift 채점판 — 부호 있는 고정
+            # 버킷 (lift 는 Wilson 경계라 통상 |lift|<0.15). 'NULL'=미기록(폴백 관찰),
+            # 'sl0'=조회 성공·증거부족 중립. 판정: 양수 버킷의 실현 적중이 sl0 보다
+            # 높고 음수 버킷이 낮으면 사전확률에 정보가 있다는 증거.
+            "state_lift_h24": f"""{_DEDUP_CTE}
+                SELECT CASE
+                         WHEN state_prior_lift IS NULL THEN 'NULL'
+                         WHEN state_prior_lift = 0 THEN 'sl0'
+                         WHEN state_prior_lift <= -0.06 THEN 'sl(-inf,-0.06]'
+                         WHEN state_prior_lift < -0.02 THEN 'sl(-0.06,-0.02)'
+                         WHEN state_prior_lift < 0 THEN 'sl[-0.02,0)'
+                         WHEN state_prior_lift < 0.02 THEN 'sl(0,0.02)'
+                         WHEN state_prior_lift < 0.06 THEN 'sl[0.02,0.06)'
+                         ELSE 'sl[0.06,inf)' END AS bucket,
                        COUNT(*) AS n, SUM(is_correct_24h) AS hits,
                        MIN(timestamp) AS ts_min, MAX(timestamp) AS ts_max
                   FROM dedup WHERE is_correct_24h IN (0, 1) GROUP BY 1""",
@@ -702,6 +748,78 @@ def get_sla_history(days: int = 30) -> Dict[str, Any]:
     }
 
 
+# ── 최신 공개 앵커 (2026-10-07) ────────────────────────────────────────────
+# spec_external_anchor §4 의 latest_public_anchor 는 그동안 미구현이었다 — url_pattern 만 있어
+# AI 가 "어느 날짜 글이 실제로 있는지" 를 추측해야 했다. Mac 발행 파이프가 게시하는
+# latest.json 을 읽되, **본체 원장 해시와 일치할 때만** 검증된 값으로 서빙한다.
+# 불일치는 숨기지 않는다 — 앵커의 존재 이유가 변조 탐지다(상태로 노출 + ERROR 로그).
+_PUBLIC_ANCHOR_TTL_OK = 6 * 3600
+_PUBLIC_ANCHOR_TTL_FAIL = 600       # 실패를 길게 캐시하면 "안 보이는 실패" 가 된다(09-22 교훈)
+_PUBLIC_ANCHOR_CACHE: Dict[str, Any] = {"ts": 0.0, "ttl": 0, "doc": None}
+_PUBLIC_ANCHOR_LOCK = None
+_ALLOWED_ANCHOR_URL_PREFIXES = ("https://blog.oneqaz.com/anchors/", "https://web.archive.org/web/")
+
+
+def _fetch_latest_public_anchor_doc() -> Optional[Dict[str, Any]]:
+    """latest.json 을 받아 형식만 검증해 반환(캐시). 실패·부재는 None."""
+    global _PUBLIC_ANCHOR_LOCK
+    import json as _json
+    import re as _re
+    import threading
+    import urllib.request
+    if _PUBLIC_ANCHOR_LOCK is None:
+        _PUBLIC_ANCHOR_LOCK = threading.Lock()
+    url = os.environ.get("ANCHOR_LATEST_JSON_URL", "https://blog.oneqaz.com/anchors/latest.json").strip()
+    with _PUBLIC_ANCHOR_LOCK:
+        c = _PUBLIC_ANCHOR_CACHE
+        if time.time() - c["ts"] < c["ttl"]:
+            return c["doc"]
+        doc = None
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "oneqaz-ledger-integrity/1"})
+            with urllib.request.urlopen(req, timeout=3) as r:
+                raw = _json.loads(r.read(65536).decode("utf-8"))
+            day = str(raw.get("anchor_day") or "")
+            h = str(raw.get("chain_hash") or "").lower()
+            page = str(raw.get("url") or "")
+            if (_re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) and _re.fullmatch(r"[0-9a-f]{64}", h)
+                    and page.startswith(_ALLOWED_ANCHOR_URL_PREFIXES[0])):
+                doc = {"day": day, "chain_hash": h, "url": page[:300]}
+                en = str(raw.get("url_en") or "")
+                if en.startswith(_ALLOWED_ANCHOR_URL_PREFIXES[0]):
+                    doc["url_en"] = en[:300]
+                wb = raw.get("wayback")
+                if isinstance(wb, list):
+                    doc["wayback"] = [str(u)[:300] for u in wb[:4]
+                                      if str(u).startswith(_ALLOWED_ANCHOR_URL_PREFIXES[1])]
+            else:
+                logger.warning("[anchor] latest.json 형식 불일치 — 무시: %s", url)
+        except Exception as e:
+            # 게시 전(404)·네트워크 장애는 정상 경로다 — 필드를 내지 않을 뿐 응답은 깨지 않는다.
+            logger.info("[anchor] latest.json 조회 실패(%s): %s", url, type(e).__name__)
+        c.update({"ts": time.time(), "ttl": _PUBLIC_ANCHOR_TTL_OK if doc else _PUBLIC_ANCHOR_TTL_FAIL,
+                  "doc": doc})
+        return doc
+
+
+def _latest_public_anchor(conn) -> Optional[Dict[str, Any]]:
+    """원장 대조를 거친 최신 공개 앵커. 미게시면 None (존재하지 않는 검증 경로 주장 금지)."""
+    doc = _fetch_latest_public_anchor_doc()
+    if not doc:
+        return None
+    row = conn.execute(
+        "SELECT chain_hash FROM prediction_ledger_hashes WHERE day = ?", (doc["day"],)
+    ).fetchone()
+    ledger_hash = (row["chain_hash"] if row else None)
+    if ledger_hash and ledger_hash.lower() == doc["chain_hash"]:
+        return dict(doc, verified_against_ledger=True)
+    logger.error("[anchor] 공개 앵커 %s 해시가 원장과 다름 (public=%s ledger=%s)",
+                 doc["day"], doc["chain_hash"][:16], (ledger_hash or "∅")[:16])
+    return {"day": doc["day"], "url": doc["url"], "verified_against_ledger": False,
+            "status": "mismatch_with_ledger" if ledger_hash else "day_not_in_ledger",
+            "published_chain_hash": doc["chain_hash"], "ledger_chain_hash": ledger_hash}
+
+
 def get_chain(days: int = 30) -> Dict[str, Any]:
     """최근 N일 체인 조회 (서빙용 — /ledger 라우트 + get_ledger_integrity tool)."""
     conn = _open_ledger_rw()
@@ -716,6 +834,8 @@ def get_chain(days: int = 30) -> Dict[str, Any]:
             "SELECT COUNT(*) AS n, MIN(day) AS first_day, MAX(day) AS last_day "
             "FROM prediction_ledger_hashes"
         ).fetchone()
+        _public = (_latest_public_anchor(conn)
+                   if os.environ.get("ANCHOR_BLOG_URL_PATTERN", "").strip() else None)
     finally:
         conn.close()
     # [2026-08-18 외부앵커] 실재하는 앵커 층만 서빙 (정직 원칙 — 존재하지 않는
@@ -739,9 +859,10 @@ def get_chain(days: int = 30) -> Dict[str, Any]:
             "what": ("each day's latest chain_hash is fixed in a small dated file and "
                      "timestamped via OpenTimestamps calendar servers onto Bitcoin — "
                      "cryptographic proof the hash existed no later than that time"),
+            # [2026-10-07] 블로그 층 가동(2026-10-04 앵커부터 .ots 배포) — "pending" 문구 갱신.
             "visibility": ("attestation is public (Bitcoin); the .ots proof files are "
-                           "distributed with the weekly public anchor posts once the "
-                           "blog layer is live — until then, proof distribution pending"),
+                           "published with each public anchor post under "
+                           "https://blog.oneqaz.com/anchors/ (see latest_public_anchor)"),
         },
     ]
     _blog_pattern = os.environ.get("ANCHOR_BLOG_URL_PATTERN", "").strip()
@@ -768,6 +889,8 @@ def get_chain(days: int = 30) -> Dict[str, Any]:
                 "day": _latest.get("day"),
                 "chain_hash": _latest.get("chain_hash"),
             },
+            # [2026-10-07] 원장 대조를 거친 최신 공개 앵커 — 미게시면 키 자체가 없다.
+            **({"latest_public_anchor": _public} if _public else {}),
             "honesty_note": (
                 "Anchors prove immutability from their own start date forward. History "
                 "before the first public anchor remains reproducible-but-unproven "

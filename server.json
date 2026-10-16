@@ -3,7 +3,7 @@
   "name": "io.github.wnsod/oneqaz-trading-mcp",
   "title": "OneQAZ Trading Intelligence",
   "description": "Verifiable crypto/KR/US market intelligence for AI agents: signals, hash-chained ledger. Not advice.",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "websiteUrl": "https://oneqaz.com",
   "repository": {
     "url": "https://github.com/oneqaz-trading/oneqaz-trading-mcp",
@@ -13,7 +13,7 @@
     {
       "registryType": "pypi",
       "identifier": "oneqaz-trading-mcp",
-      "version": "0.4.5",
+      "version": "0.5.0",
       "transport": {
         "type": "stdio"
       },

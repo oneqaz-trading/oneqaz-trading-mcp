@@ -16,18 +16,33 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Literal
+from typing import Annotated, Any, Dict, List, Optional, Literal
+
+from pydantic import Field
 
 from oneqaz_trading_mcp.config import (
     CACHE_TTL_POSITIONS,
     get_market_db_path,
     connect_readonly,
 )
-from oneqaz_trading_mcp.resources.resource_response import mcp_error, MCPErrorCode, MCPErrorAction, wrap_tool_response
+from oneqaz_trading_mcp.resources.resource_response import (
+    mcp_error, MCPErrorCode, MCPErrorAction, wrap_tool_response,
+    clamp_limit, hoist_constant_fields, truncation_fields,
+)
+
+# [2026-09-22] 통계 표본과 반환 행수 분리 (trade_history 와 동일한 이유).
+# ⚠️ profitable/losing/avg_pnl/avg_ai_score 는 **반환된 행에서** 계산된다.
+# limit 만 내리면 "보유 종목 중 이익 비율" 이 50표본 통계로 바뀐다.
+# ⇒ SQL 은 스캔 상한까지 읽어 통계를 내고, 응답에는 limit 만큼만 싣는다.
+_POS_STATS_SCAN_CAP = 1000
+_POS_LIMIT_DEFAULT = 50
+_POS_LIMIT_MAX = 1000
+# 저엔트로피 부수 상수만. 차원키(symbol 등)는 금지 (step1b 함정 ②)
+_POS_HOISTABLE = ("entry_strategy", "current_strategy", "strategy_match", "ai_reason")
 
 # FastMCP introspects the function return annotation to build outputSchema.
 try:
-    from oneqaz_trading_mcp.schemas import PositionsEnvelope
+    from oneqaz_trading_mcp.schemas import LosingPositionsEnvelope, PositionDetailEnvelope, PositionsEnvelope, ProfitablePositionsEnvelope, StrategyDistributionEnvelope
 except ImportError:  # pragma: no cover
     PositionsEnvelope = Dict[str, Any]  # type: ignore[assignment,misc]
 
@@ -131,9 +146,13 @@ def _get_positions(
     strategy: Optional[str] = None,
     sort_by: str = "profit_loss_pct",
     sort_order: str = "desc",
-    limit: int = 1000,
+    limit: Optional[int] = None,
 ) -> Dict[str, Any]:
     """포지션 조회 (필터링 및 정렬 지원)"""
+    # [2026-09-22] limit 상한 — 종전에는 상한이 없어 외부가 limit=100000 으로
+    # 전 구간을 한 응답에 긁을 수 있었다 (prediction_ledger/bulk_export 는 이미
+    # _MAX_PAGE 로 막고 있었고, 이 두 툴만 뚫려 있었다).
+    limit = clamp_limit(limit, _POS_LIMIT_DEFAULT, _POS_LIMIT_MAX)
     db_path = get_market_db_path(market_id)
     logger.info("[MCP] get_positions market_id=%s db_path=%s", market_id, db_path)
     # [2026-08-10] .exists() 게이트 제거 — db_path 는 PG 라우팅용 논리 키
@@ -188,7 +207,8 @@ def _get_positions(
                 sort_by = "profit_loss_pct"
             order = "DESC" if sort_order.lower() == "desc" else "ASC"
             query += f" ORDER BY {sort_by} {order} LIMIT ?"
-            params.append(limit)
+            # 통계 표본용 스캔 — 사용자 limit 과 분리 (위 상수 주석 참조)
+            params.append(max(limit, _POS_STATS_SCAN_CAP))
             
             cursor = conn.execute(query, params)
             positions = []
@@ -249,15 +269,28 @@ def _get_positions(
                     "avg_ai_score": 0,
                 }
             
+            # [2026-09-22] 행만 페이지로 자른다. stats 는 스캔 전체 기준 유지.
+            page = positions[:limit]
+            common = hoist_constant_fields(page, _POS_HOISTABLE)
+            trunc = truncation_fields(
+                returned=len(page),
+                total=len(positions),
+                limit=limit,
+                maximum=_POS_LIMIT_MAX,
+                hint=("strategy / min_roi / max_roi 로 범위를 좁히세요 "
+                      "(stats 는 보유 전체 기준입니다)."),
+                total_is_lower_bound=len(positions) >= _POS_STATS_SCAN_CAP,
+            )
+
             # LLM용 요약
             summary_lines = [
-                f"[{market_id.upper()} 포지션] {len(positions)}개 보유",
+                f"[{market_id.upper()} 포지션] {len(positions)}개 보유 / {len(page)}개 반환",
                 f"- 이익/손실: {stats['profitable']}개 / {stats['losing']}개",
                 f"- 평균 수익률: {stats['avg_pnl']:+.2f}%",
                 f"- 평균 AI 점수: {stats['avg_ai_score']:.2f}",
             ]
             
-            for p in positions[:5]:
+            for p in page[:5]:
                 sym = p.get("symbol") or p.get("coin", "?")
                 pnl = p.get("profit_loss_pct", 0)
                 strategy = p.get("current_strategy", "?")
@@ -267,8 +300,18 @@ def _get_positions(
             
             return {
                 "market_id": market_id,
-                "positions": positions,
+                "positions": page,
                 "stats": stats,
+                "stats_scope": (
+                    f"stats are aggregated over all {len(positions)} open positions "
+                    f"(scan cap {_POS_STATS_SCAN_CAP}); positions[] carries the first "
+                    f"{len(page)} of them"
+                ),
+                **trunc,
+                **({"common": common,
+                    "common_note": ("common 의 값은 positions 의 모든 행에 적용됩니다"
+                                    "(행에서는 생략). 행에 같은 키가 있으면 행 값이 우선합니다.")}
+                   if common else {}),
                 "filters": {
                     "min_roi": min_roi,
                     "max_roi": max_roi,
@@ -429,15 +472,32 @@ def register_position_tools(mcp, cache):
         fq_losing_positions, fq_strategy_distribution,
     )
     
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
+    @mcp.tool(title='Positions', annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
     async def get_positions(
-        market_id: str,
-        min_roi: Optional[float] = None,
-        max_roi: Optional[float] = None,
-        strategy: Optional[str] = None,
-        sort_by: str = "profit_loss_pct",
-        sort_order: str = "desc",
-        limit: int = 1000,
+        market_id: Annotated[str, Field(
+            description='Market ID (crypto, kr_stock, us_stock). Aliases coin/kr/us and any letter case are accepted.', json_schema_extra={'enum': ['crypto', 'kr_stock', 'us_stock']}
+        )],
+        min_roi: Annotated[Optional[float], Field(
+            description='Min ROI % filter (e.g., -5.0)'
+        )] = None,
+        max_roi: Annotated[Optional[float], Field(
+            description='Max ROI % filter (e.g., 10.0)'
+        )] = None,
+        strategy: Annotated[Optional[str], Field(
+            description='Strategy filter (e.g., trend, scalping)'
+        )] = None,
+        sort_by: Annotated[str, Field(
+            description='Sort field (profit_loss_pct, entry_timestamp, holding_duration, ai_score)'
+        )] = 'profit_loss_pct',
+        sort_order: Annotated[str, Field(
+            description='Sort direction (desc, asc)'
+        )] = 'desc',
+        limit: Annotated[int, Field(
+            description=('Max rows returned (default 50, max 1000). Rows are paginated; '
+                         'see total_available / truncated. NOTE: stats (profitable, '
+                         'avg_pnl, avg_ai_score) are aggregated over all open positions, '
+                         'not over the returned rows — see stats_scope.')
+        )] = _POS_LIMIT_DEFAULT,
     ) -> PositionsEnvelope:
         """
         Purpose: List current paper-trading positions, with dynamic filters (ROI / strategy / sort).
@@ -449,17 +509,8 @@ def register_position_tools(mcp, cache):
         Prerequisites: market://{market_id}/status recommended for context.
         Next steps: get_position_detail, get_strategy_distribution.
         Caveats: paper-trading data only. Positions are not real money holdings.
-        Disclaimer: Information only, not investment advice.
 
 
-        Args:
-            market_id: Market ID (crypto, kr_stock, us_stock)
-            min_roi: Min ROI % filter (e.g., -5.0)
-            max_roi: Max ROI % filter (e.g., 10.0)
-            strategy: Strategy filter (e.g., trend, scalping)
-            sort_by: Sort field (profit_loss_pct, entry_timestamp, holding_duration, ai_score)
-            sort_order: Sort direction (desc, asc)
-            limit: Max results (default 1000)
         """
         cache_key = f"positions_{market_id}_{min_roi}_{max_roi}_{strategy}_{sort_by}_{sort_order}_{limit}"
         cached = cache.get(cache_key, ttl=CACHE_TTL_POSITIONS)
@@ -489,12 +540,18 @@ def register_position_tools(mcp, cache):
         cache.set(cache_key, wrapped)
         return wrapped
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
+    @mcp.tool(title='Position Detail', annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
     async def get_position_detail(
-        market_id: str,
-        coin: Optional[str] = None,
-        symbol: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        market_id: Annotated[str, Field(
+            description='Market ID (crypto, kr_stock, us_stock; aliases coin/kr/us accepted)', json_schema_extra={'enum': ['crypto', 'kr_stock', 'us_stock']}
+        )],
+        coin: Annotated[Optional[str], Field(
+            description='Legacy alias of symbol (kept for backward compatibility)'
+        )] = None,
+        symbol: Annotated[Optional[str], Field(
+            description='Asset identifier (preferred; e.g., BTC, ETH, AAPL)'
+        )] = None,
+    ) -> PositionDetailEnvelope:
         """
         Purpose: Per-symbol paper position deep-dive (position + recent trades + decisions).
         Triggers (casual questions too): "how's the BTC position doing?", "삼성전자 얼마나 벌고 있어?",
@@ -504,12 +561,6 @@ def register_position_tools(mcp, cache):
         Next steps: get_signal_detail, get_role_analysis.
         Caveats: returns an error envelope when no position exists for the symbol.
 
-        Args:
-            market_id: Market ID (crypto, kr_stock, us_stock; aliases coin/kr/us accepted)
-            symbol: Asset identifier (preferred; e.g., BTC, ETH, AAPL)
-            coin: Legacy alias of symbol (kept for backward compatibility)
-
-        Disclaimer: Information only, not investment advice.
         """
         _symbol = symbol or coin
         if not _symbol:
@@ -535,11 +586,15 @@ def register_position_tools(mcp, cache):
         cache.set(cache_key, wrapped)
         return wrapped
     
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
+    @mcp.tool(title='Profitable Positions', annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
     async def get_profitable_positions(
-        market_id: str,
-        limit: int = 20,
-    ) -> Dict[str, Any]:
+        market_id: Annotated[str, Field(
+            description='Market ID (crypto, kr_stock, us_stock; aliases coin/kr/us accepted)', json_schema_extra={'enum': ['crypto', 'kr_stock', 'us_stock']}
+        )],
+        limit: Annotated[int, Field(
+            description='Max results (default 20)'
+        )] = 20,
+    ) -> ProfitablePositionsEnvelope:
         """
         Purpose: Profitable paper positions (ROI > 0). Convenience wrapper around get_positions(min_roi=0.01).
         Triggers (casual questions too): "what's winning right now?", "지금 뭐가 수익 나고 있어?",
@@ -549,11 +604,6 @@ def register_position_tools(mcp, cache):
         Next steps: get_position_detail for full context.
         Caveats: paper-trading data only.
 
-        Args:
-            market_id: Market ID (crypto, kr_stock, us_stock; aliases coin/kr/us accepted)
-            limit: Max results (default 20)
-
-        Disclaimer: Information only, not investment advice.
         """
         result = await asyncio.to_thread(
             _get_positions,
@@ -570,11 +620,15 @@ def register_position_tools(mcp, cache):
             followup_questions_fn=fq_profitable_positions,
         )
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
+    @mcp.tool(title='Losing Positions', annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
     async def get_losing_positions(
-        market_id: str,
-        limit: int = 20,
-    ) -> Dict[str, Any]:
+        market_id: Annotated[str, Field(
+            description='Market ID (crypto, kr_stock, us_stock; aliases coin/kr/us accepted)', json_schema_extra={'enum': ['crypto', 'kr_stock', 'us_stock']}
+        )],
+        limit: Annotated[int, Field(
+            description='Max results (default 20)'
+        )] = 20,
+    ) -> LosingPositionsEnvelope:
         """
         Purpose: Losing paper positions (ROI < 0). Convenience wrapper around get_positions(max_roi=-0.01).
         Triggers (casual questions too): "what's underwater?", "지금 뭐가 물려 있어?",
@@ -584,11 +638,6 @@ def register_position_tools(mcp, cache):
         Next steps: get_position_detail, get_role_analysis.
         Caveats: paper-trading data only.
 
-        Args:
-            market_id: Market ID (crypto, kr_stock, us_stock; aliases coin/kr/us accepted)
-            limit: Max results (default 20)
-
-        Disclaimer: Information only, not investment advice.
         """
         result = await asyncio.to_thread(
             _get_positions,
@@ -605,8 +654,12 @@ def register_position_tools(mcp, cache):
             followup_questions_fn=fq_losing_positions,
         )
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
-    async def get_strategy_distribution(market_id: str) -> Dict[str, Any]:
+    @mcp.tool(title='Strategy Distribution', annotations={"readOnlyHint": True, "openWorldHint": True, "idempotentHint": True})
+    async def get_strategy_distribution(
+        market_id: Annotated[str, Field(
+            description='Market ID (crypto, kr_stock, us_stock; aliases coin/kr/us accepted)', json_schema_extra={'enum': ['crypto', 'kr_stock', 'us_stock']}
+        )],
+    ) -> StrategyDistributionEnvelope:
         """
         Purpose: Per-strategy breakdown across current paper positions (count, avg P&L, win rate per strategy).
         Triggers (casual questions too): "what strategies are you running?", "무슨 전략 돌리고 있어?",
@@ -616,10 +669,6 @@ def register_position_tools(mcp, cache):
         Next steps: market://{market_id}/derived/strategy-fitness, signals/feedback.
         Caveats: empty distribution when no positions are open.
 
-        Args:
-            market_id: Market ID (crypto, kr_stock, us_stock; aliases coin/kr/us accepted)
-
-        Disclaimer: Information only, not investment advice.
         """
         cache_key = f"strategy_distribution_{market_id}"
         cached = cache.get(cache_key, ttl=CACHE_TTL_POSITIONS)
