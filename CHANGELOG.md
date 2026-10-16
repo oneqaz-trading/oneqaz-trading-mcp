@@ -6,7 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-Hosted-page sync only — the mirrored server code is unchanged (no monorepo sync).
+## [0.4.5] - 2026-10-16
+
+Docs/metadata release plus hosted-page updates. The mirrored server code is otherwise unchanged from
+0.4.4 (no monorepo sync in this release).
 
 ### Changed
 
@@ -18,11 +21,6 @@ Hosted-page sync only — the mirrored server code is unchanged (no monorepo syn
 - `/keys`: explains connecting from AI apps — choose **Connect free** on the OneQAZ connect screen; Pro
   users can enter their key on the same screen.
 - `PRIVACY.md`: summary updated to match.
-
-## [0.4.5] - 2026-10-09
-
-Docs/metadata release plus the two hosted-page fixes below. The mirrored server code is otherwise
-unchanged from 0.4.4 (no monorepo sync in this release).
 
 ### Fixed
 
