@@ -9,8 +9,10 @@
 > **The specialist API for financial AI — with conversation-aware response hooks.**
 >
 > Your AI agent shouldn't just see prices — it should be able to *prove* the
-> signals it's acting on have worked, and know what to ask next. OneQAZ ships
-> 39 tools across 9 categories: 13 Trust Layer tools (hit rates scored against
+> signals it's acting on have worked, and know what to ask next. The hosted
+> endpoint ships 42 tools across 10 categories: 3 entity-context tools (one call
+> for a stock, a sector or a whole market — its state, what moves before it,
+> tagged news, and what is *not* tracked), 13 Trust Layer tools (hit rates scored against
 > honest baselines, calibration, governance), a tamper-evident prediction ledger
 > (`get_ledger_integrity` — a daily SHA-256 hash chain over every macro-regime
 > prediction, recomputable by anyone), 4 cross-asset correlation tools (sector / macro / peer),
@@ -89,7 +91,7 @@ The pipeline runs 24/7. Crypto trades around the clock; Korean and US equity sig
 
 ### Option 1: Live API — no install needed
 
-Live data — signals refresh as new candles close (5-minute to daily). Every tool and resource is callable without a key on the free tier (1,500 calls/day).
+Live data — signals refresh as new candles close (5-minute to daily). Every tool and resource is callable without a key on the free tier (1,500 calls/day) — the one exception is `get_account_status`, which reports on a connected OneQAZ account (see [Access Policy](#access-policy)).
 
 Cursor (`mcp.json`) and other clients that take a remote URL in their config:
 
@@ -123,14 +125,28 @@ VS Code and other clients: use their remote (HTTP) MCP server option with the sa
 Try one of:
 - *"Call `get_daily_brief` and summarize the market for me."* — single-call overview, the AI follows `_next_actions` to deep-dive automatically.
 - *"Call `get_prediction_accuracy` and tell me whether to trust OneQAZ."* — Trust Layer entry point, returns sample-count-weighted hit rates.
-- *"Read `market://meta/discovery` first, then plan."* — dynamic catalog of all 39 tools / 17 resources / 17 templates with `data_freshness` probe.
+- *"Read `market://meta/discovery` first, then plan."* — dynamic catalog of every hosted tool / resource / template (43 tools including the account tool, 17 resources, 17 templates) with `data_freshness` probe.
 
 ### Option 2: Self-host (source transparency)
 
-Since 0.4.0 this package is a **faithful mirror of the production server** —
-the exact code serving `api.oneqaz.com/mcp`, synced from the OneQAZ monorepo
-by `scripts/sync_from_monorepo.py`. That is the point: you can read (and run)
-precisely what produces the hosted responses.
+This package is a **snapshot of the production server code as of 0.4.0
+(2026-08-23)**, synced from the OneQAZ monorepo by
+`scripts/sync_from_monorepo.py`. Releases 0.4.1–0.4.6 changed only the bundled
+`/privacy`, `/terms` and `/keys` pages, a removed password default and the
+docs. The hosted endpoint has changed since 0.4.0, so the package is **not**
+the exact code serving `api.oneqaz.com/mcp` today. Known differences:
+
+- **Tools**: the package has 39 tools; the hosted endpoint has 42. The
+  entity-context tools (`get_symbol_context`, `get_group_context`,
+  `get_market_context`) and `get_account_status` are hosted-only for now.
+- **Hosted-only behavior**: OAuth account connection ("Connect free"),
+  rejection of unrecognized API keys with HTTP 401, and the FastMCP 4 runtime
+  (this package pins FastMCP 2.x).
+- **Later fixes**: most server modules have changed on the hosted side since
+  2026-08-23; those changes are not in this package yet.
+
+A resync is being prepared. Until it ships, read this package as a reference
+for how the hosted responses are produced, not as a byte-for-byte copy.
 
 ```bash
 pip install oneqaz-trading-mcp
@@ -167,9 +183,11 @@ Then connect from any MCP client:
 
 | Tier | Auth | Daily quota | Burst | Notes |
 |------|------|-------------|-------|-------|
-| **free** | none / invalid key | 1,500 / day | 60 / min | All 39 tools + 17 resources + 17 templates |
+| **free** | none | 1,500 / day | 60 / min | All 42 tools + 17 resources + 17 templates |
 | **pro** | valid API key | 50,000 / day | 200 / min | Same surface, higher volume — for bots / schedulers |
 | **internal** | owner-only | unlimited | unlimited | Reserved for real user-fund tools (currently empty) |
+
+An API key the hosted server does not recognize is **rejected with HTTP 401** — it is not silently downgraded to free, so a mistyped key shows up at once. Accounts are optional: AI apps that support OAuth (for example Claude) can choose **Connect free** to link a free OneQAZ account without an API key; limits are then tracked per account, and `get_account_status` reports the plan and remaining quota.
 
 Rate limit headers on every response: `X-RateLimit-Tier`, `X-RateLimit-Daily-Limit`, `X-RateLimit-Daily-Remaining`, `X-RateLimit-Minute-Remaining`. When the quota is exceeded the server returns HTTP 429 with `Retry-After`. Pricing and key requests: <https://api.oneqaz.com/pricing>.
 
@@ -255,7 +273,19 @@ OneQAZ doesn't just return data; it tells your AI **what to ask next**.
 
 Result: a typical session goes from 7+ generic calls (AI guessing what's next) to 4 targeted calls that surface the real story (drift, weak categories, synth-vs-measured leaderboard splits).
 
-## Tools (39 total — all free tier)
+## Tools (42 on the hosted endpoint — all free tier)
+
+Plus `get_account_status` (plan and remaining quota of a connected OneQAZ account). The self-host package currently has 39 of the 42 — see [Option 2](#option-2-self-host-source-transparency).
+
+### Entity context (3 tools) — hosted, new in 2026-10
+
+One call answers "what is going on with X?" for a stock or coin, a sector / ETF basket, or a whole market. Each response leads with self-contained headline claims, then the entity's observed state, what moves before it (lead-lag links, macro and structure groups), what follows it, tagged news, and **gaps** — what OneQAZ does not track for it.
+
+| Tool | Returns |
+|------|---------|
+| `get_symbol_context` | One stock or coin (ticker, KRX code or name): signal state, its structure group, upstream links, peers that follow it, tagged news, gaps. Ambiguous names return candidates instead of a guess. |
+| `get_group_context` | A sector, theme, ETF basket or index basket: regime state per interval, co-moving groups, member symbols with their latest signal bias, symbols the basket leads, gaps. |
+| `get_market_context` | A whole market (KR, US, crypto): structure regime and global macro regime, the macro categories assumed to affect it (with tuned lags), its groups by regime stage, market-tagged news, gaps. |
 
 ### High-frequency entry — `get_daily_brief` (1 tool)
 
@@ -478,7 +508,7 @@ Authoritative quotas live in [Access Policy](#access-policy) above. Quick recap:
 
 | Tier | Daily Quota | Burst | Auth |
 |------|-------------|-------|------|
-| **Free** | 1,500 / day | 60 / min | none / invalid key |
+| **Free** | 1,500 / day | 60 / min | none (an unrecognized key gets HTTP 401) |
 | **Pro** (beta) | 50,000 / day | 200 / min | valid API key |
 | **Internal** (owner) | Unlimited | Unlimited | owner-only |
 | **Local** (self-hosted) | Unlimited | Unlimited | n/a |
@@ -493,9 +523,10 @@ Authoritative quotas live in [Access Policy](#access-policy) above. Quick recap:
 ## Privacy
 
 - **Hosted service** (`api.oneqaz.com`): the authoritative policy is <https://api.oneqaz.com/privacy>.
-  In short — no accounts; per-request metadata (IP, user-agent, tool name, outcome, whitelisted
-  arguments, client/protocol metadata, API-key fingerprint) is logged; **IP addresses and IP-derived
-  session keys are irreversibly replaced after 12 months**; data is never sold.
+  In short — no account is needed (connecting an AI app to a free OneQAZ account is optional);
+  per-request metadata (IP, user-agent, tool name, outcome, whitelisted arguments, client/protocol
+  metadata, API-key fingerprint, and the account identifier if you connected one) is logged;
+  **IP addresses and IP-derived session keys are irreversibly replaced after 12 months**; data is never sold.
 - **Self-hosting**: the package sends no telemetry to OneQAZ, and request logs go to *your* PostgreSQL.
   Replace the bundled `/privacy` page with your own notice if you expose your deployment.
 

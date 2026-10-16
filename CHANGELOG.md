@@ -6,6 +6,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-10-17
+
+Docs-only release. The server code is unchanged from 0.4.5.
+
+### Fixed
+
+- README no longer claims the package is "the exact code serving `api.oneqaz.com/mcp`". The server code
+  is a snapshot from 0.4.0 (2026-08-23); the README now says so and lists the known differences from the
+  hosted endpoint (3 entity-context tools and `get_account_status` are hosted-only, OAuth "Connect free",
+  HTTP 401 for unrecognized API keys, FastMCP 4 runtime). A full resync is being prepared.
+- Hosted tool count corrected from 39 to 42 (plus `get_account_status` for connected accounts), with the
+  new entity-context tools (`get_symbol_context`, `get_group_context`, `get_market_context`) documented.
+- Access policy: an unrecognized API key is rejected with HTTP 401 on the hosted server (it was documented
+  as falling back to the free tier); OAuth account connection documented as optional.
+- Privacy summary: "no accounts" replaced — accounts are optional, and the account identifier is logged
+  when one is connected (matches <https://api.oneqaz.com/privacy>).
+
 ## [0.4.5] - 2026-10-16
 
 Docs/metadata release plus hosted-page updates. The mirrored server code is otherwise unchanged from
