@@ -53,10 +53,25 @@ def _limits(limit: Any) -> Tuple[int, int, int]:
     return lim, members, news
 
 
+_MISSING_MODULE_WARNED: set = set()
+
+
 def _safe(section: str, gaps: List[Dict[str, str]], what: str, fn: Callable[[], Any], default: Any) -> Any:
-    """원천 1개 호출 — 실패는 error 로그 + gap(data_unavailable, 원인 명시). 조용히 0 으로 만들지 않는다."""
+    """원천 1개 호출 — 실패는 error 로그 + gap(data_unavailable, 원인 명시). 조용히 0 으로 만들지 않는다.
+
+    ImportError 는 일시 장애가 아니다 — 그 원천의 모듈이 이 배포에 없다(공개 패키지는 모노레포 전용 모듈을
+    싣지 않는다). '잠시 뒤 재시도' 로 읽히지 않게 문구를 가르고, 매 호출 트레이스백 대신 원천별 1회 경고한다.
+    """
     try:
         return fn()
+    except ImportError as e:
+        if what not in _MISSING_MODULE_WARNED:
+            _MISSING_MODULE_WARNED.add(what)
+            logger.warning("entity_context: %s unavailable in this deployment (module missing): %s", what, e)
+        gaps.append(gap(section, "data_unavailable",
+                        f"{what} is not available in this deployment (a required module is not installed), "
+                        "so this part cannot be filled here; it is not a temporary failure."))
+        return default
     except Exception as e:
         logger.error("entity_context: %s source failed for section %s: %s", what, section, e, exc_info=True)
         gaps.append(gap(section, "data_unavailable",

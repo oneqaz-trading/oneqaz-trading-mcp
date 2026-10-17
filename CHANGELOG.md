@@ -34,6 +34,13 @@ Full resync with the hosted server (`api.oneqaz.com/mcp` as of 2026-10-17) — t
   `entity/` subpackage and four helpers are mirrored, files removed upstream are removed here, and the
   sync now fails on unresolved monorepo imports, credential-shaped literals and public IP literals.
 
+### Fixed
+
+- Entity-context tools no longer report a database outage as "not a symbol OneQAZ tracks": when the
+  lookup sources cannot be read, `resolution.status` is `unavailable` (with `retryable: true` and
+  `unavailable_sources`), and `not_covered` is returned only after every source was read. Sections that
+  need a module this deployment does not include now say so instead of calling it a temporary failure.
+
 ### Removed
 
 - The hosted default of `MCP_SELF_TRAFFIC_IPS` (usage-analytics configuration that only applies to the

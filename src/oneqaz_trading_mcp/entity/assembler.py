@@ -126,19 +126,29 @@ def assemble(*, tool: str, entity: Optional[Dict[str, Any]], resolution: Dict[st
 
 
 def unresolved(tool: str, resolution: Dict[str, Any], what: str) -> Dict[str, Any]:
-    """ambiguous / not_covered — 본문은 비우고 후보·지원 범위만 (추측하지 않는다)."""
+    """ambiguous / not_covered / unavailable — 본문은 비우고 후보·지원 범위·실패 사유만 (추측하지 않는다).
+
+    unavailable = 해석에 필요한 원천을 못 읽음. '추적하지 않음' 과 다른 사건이라 문구·gap 사유를 가른다.
+    """
     status = resolution.get("status")
     n = len(resolution.get("candidates") or [])
+    reason = "not_applicable"
     if status == "ambiguous":
         claim = (f"'{resolution.get('input')}' matches {resolution.get('candidates_total', n)} tracked "
                  f"entities; no {what} context is returned until one is chosen from resolution.candidates")
         detail = "Entity not resolved (ambiguous input) — choose a candidate and call again."
+    elif status == "unavailable":
+        claim = (f"'{resolution.get('input')}' could not be checked against OneQAZ {what} coverage right now; "
+                 "see resolution.note")
+        detail = ("Entity lookup could not be completed (temporary source failure, not a coverage answer) — "
+                  "call again shortly.")
+        reason = "data_unavailable"
     else:
         claim = f"'{resolution.get('input')}' is not a {what} OneQAZ tracks; see resolution.note"
         detail = "Entity not covered by OneQAZ."
     head = [headline_item(claim, as_of=_now_iso(), basis="not_applicable", horizon="not_applicable",
                           calibration="not_applicable")]
-    gaps = [gap(s, "not_applicable", detail) for s in SECTIONS]
+    gaps = [gap(s, reason, detail) for s in SECTIONS]
     return assemble(tool=tool, entity=None, resolution=resolution, self_block=None,
                     sections={}, limits={s: 0 for s in SECTIONS}, gaps=gaps, headline=head,
                     data_as_of=None, session_state=None, basis=None)

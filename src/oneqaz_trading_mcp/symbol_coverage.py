@@ -105,11 +105,15 @@ def symbol_exists(market: str, symbol: str) -> Optional[bool]:
     return _probe(market, normalize_symbol(symbol))
 
 
-def lookup_names(raw: str, markets: Optional[List[str]] = None, limit: int = 8) -> List[Dict[str, Any]]:
+def lookup_names(raw: str, markets: Optional[List[str]] = None, limit: int = 8,
+                 raise_errors: bool = False) -> List[Dict[str, Any]]:
     """종목명(한/영) 또는 코드로 마스터 후보 조회. 정확 일치 우선, 그다음 접두 일치.
 
     반환 행: {master_market, market_id, symbol, name_ko, name_en, match}
     signals 존재 여부는 확인하지 않는다 — 호출부가 용도에 맞게 거른다.
+    raise_errors=True: DB 실패를 호출부로 올린다. 기본(False)은 경고 후 [] — 후보 제안처럼
+    "못 찾음" 과 "못 읽음" 이 같은 결과여도 되는 호출부용. 둘을 구분해야 하는
+    entity resolver 는 True 로 부른다 (빈 결과를 '없음' 으로 단정하지 않기 위해).
     """
     q = str(raw or "").strip()
     if not q:
@@ -138,6 +142,8 @@ def lookup_names(raw: str, markets: Optional[List[str]] = None, limit: int = 8) 
             conn.close()
     except Exception as e:
         logger.warning("symbol_coverage name lookup failed (%r): %s", q, e)
+        if raise_errors:
+            raise
         return []
     out = []
     for r in rows:

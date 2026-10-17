@@ -468,6 +468,9 @@ def structure_skill(market: str, interval: str = "1d", days: int = 30) -> Dict[s
 def macro_hypotheses(market: str) -> Dict[str, Any]:
     """{cells: {category: cell}, as_of(튜닝 시각), status}. 셀 = get_macro_influence_map 과 같은 계산."""
     def _q():
+        # 프로파일 모듈이 이 배포에 없으면(공개 패키지) ImportError 를 그대로 올린다. 아래 경로는 그 실패를
+        # 에러 dict 로 감싸 RuntimeError(일시 장애)로 보이게 하므로, 상시 부재를 여기서 먼저 가른다.
+        import market.global_regime.profiles  # noqa: F401
         from oneqaz_trading_mcp.tools.trust_layer import _get_macro_influence_map
         d = _get_macro_influence_map(market)
         if not isinstance(d, dict) or d.get("error"):
